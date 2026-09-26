@@ -3,6 +3,39 @@
 Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
 ticks go in README §0 with the owner+time protocol.
 
+## 2026-09-26 — phone orientation sensor, on the new reeves-imu-orientation branch
+
+New feature (README §3's "phone held in front of the face" caveat: a static
+`head_yaw_offset_deg` is only accurate to ~15° and breaks down as soon as
+the phone moves independently of the wearer's head). `src/orientation.ts`
+tracks the phone's own rotation via `DeviceOrientationEvent`/
+`deviceorientationabsolute` (preferring iOS's `webkitCompassHeading` when
+present) as a **delta since a reference sample**, never an absolute
+heading -- deliberately, since neither true-north referencing nor the
+rotation-sign convention can be verified without a real device. Feeds
+straight into `head_yaw_offset_deg` in `main.ts`'s existing per-frame
+`renderCalib` (same spot `effectiveFovDeg` already lives), so markers,
+bubbles, face-anchor matching and the compass nose-marker all pick it up
+for free -- no rendering changes needed anywhere else.
+
+Gated behind a new `#orient-btn` (mirrors the mic button), off by default,
+and verified in this sandbox (no real gyroscope, but a real permission
+flow) that the degraded path is completely safe: this environment exposes
+`DeviceOrientationEvent.requestPermission` and denies it, and the tracker
+cleanly reports `state: "error", lastError: "permission denied"` with zero
+effect on anything else (`window.__hud.orientation()` confirmed via direct
+JS eval after a fresh page load and after clicking the button -- no
+exceptions, fov/yaw_off/markers/bubbles all rendered exactly as before).
+Also added a debug-panel line (`imu: <source> raw:X° delta:Y°`) so the
+first real-device test gives numbers immediately instead of needing
+another guess-and-check round like mouth-activity did.
+
+**Needs the user's actual phone for**: whether requesting
+`deviceorientationabsolute`/`webkitCompassHeading` actually fires on their
+device, and — the one thing flagged in the plan as unverifiable here at
+all — whether the pan direction is correct or needs the `ROTATION_SIGN`
+constant in `orientation.ts` flipped.
+
 ## 2026-09-26 — back to `cover`, correctly this time (full-screen, no bars)
 
 Human tested the `contain` fix: zoom was gone, but now wanted the video to

@@ -12,6 +12,7 @@ import {
 import { detectFaces, initFaceLandmarker, type DetectedFace } from "./faces";
 import { drawOverlay, type FaceAnchor } from "./render";
 import { MicStream } from "./mic";
+import { OrientationTracker } from "./orientation";
 import type { BackendMsg, Calibration, Mode } from "./types";
 import { validateBackendMsg } from "./validate";
 
@@ -73,6 +74,10 @@ const ws = new WsClient({
       case "array_status":
         state.ingestArrayStatus(msg);
         calib = { ...msg.calibration };
+        // This is the last known-good head_yaw_offset_deg; the orientation
+        // tracker should only contribute rotation *since* this moment, not
+        // fight with whatever it accumulated before it.
+        orientation.resetReference();
         break;
       case "backend_status":
         state.ingestBackendStatus(msg);
@@ -154,6 +159,44 @@ micBtn.addEventListener("click", () => {
 });
 
 if (micWanted) startMic();
+
+// ---------------------------------------------------------------------------
+// Phone orientation -> a live head_yaw_offset_deg correction
+// ---------------------------------------------------------------------------
+// Opt-in (unlike the mic): iOS requires a tap to grant sensor permission at
+// all, so there's no auto-start path to mirror there, and requiring the same
+// explicit tap on every platform keeps the behavior consistent. Nothing here
+// touches the laptop path -- `start()` resolves to "unsupported" wherever
+// there's no orientation sensor, and yawDeltaDeg() is 0 whenever the tracker
+// isn't running, so calib.head_yaw_offset_deg is exactly what it always was.
+const orientation = new OrientationTracker();
+const orientBtn = document.getElementById("orient-btn") as HTMLButtonElement;
+
+function paintOrientButton() {
+  const s = orientation.status;
+  orientBtn.classList.toggle("active", s.state === "running");
+  orientBtn.classList.toggle("error", s.state === "error" || s.state === "unsupported");
+  orientBtn.textContent =
+    s.state === "running" ? `imu ${s.deltaDeg.toFixed(0)}°` : s.state === "starting" ? "imu..." : "imu";
+  orientBtn.title =
+    s.state === "error"
+      ? `orientation: ${s.lastError}`
+      : s.state === "unsupported"
+        ? "orientation: not available on this device"
+        : "Use the phone's orientation sensor to pan bearings as you turn (needs a tap to grant permission)";
+}
+
+orientation.onStatus = () => paintOrientButton();
+paintOrientButton();
+
+orientBtn.addEventListener("click", () => {
+  if (orientation.status.state === "running") {
+    orientation.stop();
+    paintOrientButton();
+    return;
+  }
+  void orientation.start();
+});
 
 async function startCamera() {
   try {
@@ -344,8 +387,15 @@ function frame() {
   const crop = computeCoverCrop(video.videoWidth, video.videoHeight, canvas.clientWidth, canvas.clientHeight);
   // 1. Bearing math needs the narrower, actually-visible FOV, or markers
   //    land at the wrong screen position.
-  const renderCalib: Calibration = { ...calib, camera_fov_deg: effectiveFovDeg(crop.w, calib.camera_fov_deg) };
-  // 2. Raw face-detection coordinates are normalized to the *full* video
+  // 2. The phone's own rotation since the last calibration moment, if the
+  //    orientation tracker is running -- 0 otherwise, so this is a no-op
+  //    everywhere it isn't explicitly turned on.
+  const renderCalib: Calibration = {
+    ...calib,
+    camera_fov_deg: effectiveFovDeg(crop.w, calib.camera_fov_deg),
+    head_yaw_offset_deg: calib.head_yaw_offset_deg + orientation.yawDeltaDeg(),
+  };
+  // 3. Raw face-detection coordinates are normalized to the *full* video
   //    frame, not the cropped, on-screen portion of it -- remap once here
   //    so drawing code and the face->bearing match below can both just
   //    treat them as plain canvas-normalized coordinates, same as before.
@@ -368,6 +418,7 @@ function frame() {
     faces: facesOnScreen,
     faceAnchors,
     lockedSpeakerTrackId,
+    orientationStatus: orientation.status,
     wsState,
     rttMs,
     fps,
@@ -396,6 +447,7 @@ Object.defineProperty(window, "__hud", {
   value: {
     ws: () => ({ state: wsState, rttMs }),
     mic: () => mic.status,
+    orientation: () => orientation.status,
     faces: () => latestFaces,
     calib: () => calib,
     fps: () => fps,

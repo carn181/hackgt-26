@@ -3,6 +3,7 @@ import { bearingToScreenX, mirrorBearing, normalizeDeg } from "./calib";
 import type { HudState, TrackedEvent } from "./state";
 import type { DetectedFace } from "./faces";
 import type { ConnState } from "./ws-client";
+import type { OrientationStatus } from "./orientation";
 
 const URGENCY_COLOR: Record<Urgency, string> = {
   // Low was a dim #8aa0b4, which made non-speech events (footsteps, rustling,
@@ -33,6 +34,7 @@ export interface RenderOptions {
   /** Which face's trackId (faces.ts) the debounced speaker-lock currently
    * holds, if any -- surfaced so the face-box overlay can show it live. */
   lockedSpeakerTrackId: number | null;
+  orientationStatus: OrientationStatus;
   wsState: ConnState;
   rttMs: number | null;
   fps: number;
@@ -543,6 +545,12 @@ function drawDebugPanel(ctx: CanvasRenderingContext2D, opts: RenderOptions) {
     lines.push(`mics: ${mics}  yaw_off:${as.calibration.head_yaw_offset_deg}°`);
   } else {
     lines.push("mics: (no array_status yet)");
+  }
+  const o = opts.orientationStatus;
+  if (o.state === "running") {
+    lines.push(`imu: ${o.source} raw:${o.rawDeg.toFixed(1)}° delta:${o.deltaDeg.toFixed(1)}°`);
+  } else if (o.state !== "off") {
+    lines.push(`imu: ${o.state}${o.lastError ? ` (${o.lastError})` : ""}`);
   }
 
   ctx.save();
