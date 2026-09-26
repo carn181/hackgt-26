@@ -91,5 +91,7 @@ export class WsClient {
 
 export function resolveWsUrl(): string {
   const params = new URLSearchParams(window.location.search);
-  return params.get("ws") ?? "ws://127.0.0.1:8000/ws";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  // Default goes through the Vite dev proxy (/ws -> 127.0.0.1:8000).
+  return params.get("ws") ?? `${proto}//${window.location.host}/ws`;
 }
