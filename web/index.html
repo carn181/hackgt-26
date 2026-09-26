@@ -2,58 +2,28 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&display=swap"
+      rel="stylesheet"
     />
-    <meta name="color-scheme" content="dark" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <title>Sound Awareness HUD</title>
+    <title>Sound-Awareness HUD</title>
   </head>
   <body>
-    <div id="stage">
-      <video id="cam" playsinline muted autoplay></video>
-      <canvas id="hud" aria-hidden="true"></canvas>
-    </div>
-
-    <!-- Camera / permission state: shown until capture actually starts. -->
-    <div id="camera-error" hidden role="alert">
-      <div class="card">
-        <h2>Camera</h2>
-        <p id="camera-error-message">Camera not started.</p>
-        <button id="camera-retry" type="button">Retry camera</button>
+    <div id="app">
+      <video id="cam" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+      <div id="banner" class="banner hidden"></div>
+      <div id="controls">
+        <button data-mode="all" class="mode-btn active">all</button>
+        <button data-mode="important" class="mode-btn">important</button>
+        <button data-mode="quiet" class="mode-btn">quiet</button>
+        <button id="mic-btn" class="mic-btn" title="Stream this device's microphone to the backend (§4.6 audio)">mic</button>
       </div>
     </div>
-
-    <div class="layer" id="top-left">
-      <div id="conn" class="badge" data-state="connecting" role="status">connecting…</div>
-      <div id="notice" class="notice" hidden></div>
-    </div>
-
-    <div class="layer" id="diag" aria-label="Diagnostics">
-      <button id="diag-toggle" type="button" aria-expanded="false" aria-controls="diag-body">
-        <span id="diag-summary">startup</span>
-        <span class="chev" aria-hidden="true">▾</span>
-      </button>
-      <div id="diag-body" hidden></div>
-    </div>
-
-    <div class="layer" id="controls">
-      <button id="cam-start" type="button" class="primary">Start camera</button>
-      <button id="mic-toggle" type="button" class="primary">Microphone</button>
-      <div id="modes" role="group" aria-label="Notification mode">
-        <button type="button" data-mode="all" aria-pressed="true">
-          <span class="glyph" aria-hidden="true">◉</span>All
-        </button>
-        <button type="button" data-mode="important" aria-pressed="false">
-          <span class="glyph" aria-hidden="true">▲</span>Important
-        </button>
-        <button type="button" data-mode="quiet" aria-pressed="false">
-          <span class="glyph" aria-hidden="true">■</span>Quiet
-        </button>
-      </div>
-    </div>
-
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

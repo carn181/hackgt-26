@@ -711,9 +711,15 @@ async def _handle_client_message(backend: Backend, raw: str, ws: WebSocket) -> N
         return
     kind = msg.get("type")
     if kind == "ping":
-        # Echo the payload verbatim, back to the sender only: the HUD measures
+        # §4.6: the frozen contract is a verbatim echo — the original HUD measures
         # RTT from its own stamp (web/src/ws.ts:162), and the mock does the same.
         await ws.send_json(msg)
+        # The reeves frontend (web/src/ws-client.ts) instead expects a `pong` with
+        # `t_echo`, and its validator drops anything it does not know. Sending both
+        # is additive and keeps either client's latency readout alive.
+        t = msg.get("t")
+        if isinstance(t, (int, float)) and not isinstance(t, bool):
+            await ws.send_json({"type": "pong", "t": round(backend._t_now(), 3), "t_echo": t})
     elif kind == "set_mode":
         backend.on_mode(str(msg.get("mode", "")))
     elif kind == "vision":

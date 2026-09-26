@@ -1,364 +1,334 @@
-import './style.css'
-import { Hud } from './hud'
-import { MicStream } from './mic'
-import { VisionHost } from './vision'
-import { WsClient, resolveWsUrl } from './ws'
-import type { ConnState } from './ws'
-import type { Mode, PresenceMsg } from './types'
+import "./style.css";
+import { HudState } from "./state";
+import { WsClient, resolveWsUrl, type ConnState } from "./ws-client";
+import {
+  computeCoverCrop,
+  DEFAULT_CALIB,
+  effectiveFovDeg,
+  screenXToBearingDeg,
+  normalizeDeg,
+  videoNormToCropNorm,
+} from "./calib";
+import { detectFaces, initFaceLandmarker, type DetectedFace } from "./faces";
+import { drawOverlay, type FaceAnchor } from "./render";
+import { MicStream } from "./mic";
+import type { BackendMsg, Calibration, Mode } from "./types";
+import { validateBackendMsg } from "./validate";
 
-const params = new URLSearchParams(location.search)
+const video = document.getElementById("cam") as HTMLVideoElement;
+const canvas = document.getElementById("overlay") as HTMLCanvasElement;
+const banner = document.getElementById("banner") as HTMLDivElement;
+const ctx = canvas.getContext("2d")!;
 
-const video = document.querySelector<HTMLVideoElement>('#cam')!
-const canvas = document.querySelector<HTMLCanvasElement>('#hud')!
-const stage = document.querySelector<HTMLDivElement>('#stage')!
-const diagToggle = document.querySelector<HTMLButtonElement>('#diag-toggle')!
-const diagBody = document.querySelector<HTMLDivElement>('#diag-body')!
-const diagSummary = document.querySelector<HTMLSpanElement>('#diag-summary')!
-const connBadge = document.querySelector<HTMLDivElement>('#conn')!
-const notice = document.querySelector<HTMLDivElement>('#notice')!
-const modeButtons = [...document.querySelectorAll<HTMLButtonElement>('#modes button')]
-const camButton = document.querySelector<HTMLButtonElement>('#cam-start')!
-const cameraError = document.querySelector<HTMLDivElement>('#camera-error')!
-const cameraErrorMessage = document.querySelector<HTMLParagraphElement>('#camera-error-message')!
-const cameraRetry = document.querySelector<HTMLButtonElement>('#camera-retry')!
-const controls = document.querySelector<HTMLDivElement>('#controls')!
+const state = new HudState();
+let calib: Calibration = { ...DEFAULT_CALIB };
+let wsState: ConnState = "connecting";
+let rttMs: number | null = null;
+let facesReady = false;
+let latestFaces: DetectedFace[] = [];
+let addedLatencyMs: number | null = null;
 
-const hud = new Hud(canvas, video, (message) => {
-  lastDiagnostic = message
-})
-const vision = new VisionHost()
-const { url: wsUrl, blockedReason } = resolveWsUrl(params.get('ws'))
-const ws = new WsClient(wsUrl, blockedReason)
+const bannerReasons = { camera: null as string | null, ws: null as string | null };
 
-let mode: Mode = 'all'
-let lastDiagnostic = ''
-let cameraStream: MediaStream | null = null
-let cameraStarted = false
-
-// ---------------------------------------------------------------------------
-// HUD wiring
-// ---------------------------------------------------------------------------
-ws.onMessage = (msg) => hud.ingest(msg)
-let lastConnState: ConnState | null = null
-ws.onStatus = (status) => {
-  renderConnectionBadge(status.state, status.nextRetryMs, status.lastError)
-  // Re-assert the selected mode on (re)connect so the backend and the HUD never
-  // disagree about what is being suppressed — but only on the transition, not on
-  // every status update (which fires for each received message).
-  if (status.state === 'open' && lastConnState !== 'open') ws.setMode(mode)
-  lastConnState = status.state
-  hud.setBackendConnected(status.state === 'open')
-}
-vision.onStatus = (status) => {
-  hud.setVision(status.state, vision.faces)
-  // §4.6 `vision` (additive): the backend cannot open the webcam this page is
-  // streaming, so the face boxes travel over the socket. ~10 frames/s, and only
-  // while tracking is healthy — a stale or empty frame is simply not sent.
-  if (status.state === 'ready') {
-    ws.faces(
-      vision.faces.map((f) => ({
-        xc: f.box.x + f.box.w / 2,
-        w: f.box.w,
-        mouth: f.jawOpen,
-        mouthActive: f.mouthActive,
-      })),
-    )
+function renderBanner() {
+  const text = bannerReasons.camera ?? bannerReasons.ws;
+  if (!text) {
+    banner.classList.add("hidden");
+    banner.textContent = "";
+  } else {
+    banner.classList.remove("hidden");
+    banner.textContent = text;
   }
-  paintDiagnostics()
 }
 
-hud.setBottomInset(controls.getBoundingClientRect().height + 14)
-hud.start()
-
-// ---------------------------------------------------------------------------
-// Layout
-// ---------------------------------------------------------------------------
-const relayout = () => {
-  hud.resize()
-  hud.setBottomInset(controls.getBoundingClientRect().height + 14)
-}
-window.addEventListener('resize', relayout)
-window.addEventListener('orientationchange', relayout)
-new ResizeObserver(relayout).observe(stage)
-new ResizeObserver(relayout).observe(controls)
-
-// ---------------------------------------------------------------------------
-// Mode controls (§4.6 set_mode)
-// ---------------------------------------------------------------------------
-function applyMode(next: Mode): void {
-  mode = next
-  hud.setMode(next)
-  ws.setMode(next)
-  for (const button of modeButtons) {
-    const active = button.dataset.mode === next
-    button.setAttribute('aria-pressed', String(active))
-  }
-  paintDiagnostics()
-}
-for (const button of modeButtons) {
-  button.addEventListener('click', () => applyMode(button.dataset.mode as Mode))
-}
-// Start in `all` before any mode control arrives.
-hud.setMode('all')
-
-// ---------------------------------------------------------------------------
-// Diagnostics: compact by default, tap-expandable for the full readout
-// ---------------------------------------------------------------------------
-let expanded = false
-diagToggle.addEventListener('click', () => {
-  expanded = !expanded
-  diagToggle.setAttribute('aria-expanded', String(expanded))
-  diagBody.hidden = !expanded
-})
-diagBody.hidden = true
-
-function micSummary(): string {
-  const mics = hud.array?.mics
-  if (!mics?.length) return 'mics —'
-  const ok = mics.filter((m) => m.ok).length
-  return `mics ${ok}/${mics.length}${ok === mics.length ? '' : ' ⚠'}`
+function setCameraBanner(text: string | null) {
+  bannerReasons.camera = text;
+  renderBanner();
 }
 
-function renderConnectionBadge(state: ConnState, nextRetryMs: number, error: string): void {
-  connBadge.dataset.state = state
-  if (state === 'open') {
-    connBadge.textContent = 'live'
-    connBadge.title = wsUrl
-    return
-  }
-  if (state === 'blocked') {
-    connBadge.textContent = 'ws override blocked'
-    connBadge.title = error
-    return
-  }
-  if (state === 'connecting') {
-    connBadge.textContent = 'connecting…'
-    return
-  }
-  const retry = nextRetryMs ? ` · ${(nextRetryMs / 1000).toFixed(0)}s` : ''
-  connBadge.textContent = `no backend${retry}`
-  connBadge.title = error || wsUrl
+function updateBanner() {
+  bannerReasons.ws =
+    wsState === "open" ? null : wsState === "connecting" ? "connecting to backend..." : "no backend — retrying";
+  renderBanner();
 }
 
-function paintDiagnostics(): void {
-  const snap = hud.snapshot()
-  const wsStatus = ws.status
-  const backend = snap.backend
-  const array = snap.array
-  const mic = micSummary()
-  const model = backend ? backend.model : '—'
-  const transport = backend?.transport ?? array?.transport ?? '—'
-  const revision = backend?.git_rev ?? '—'
-  diagSummary.textContent = `${wsStatus.state} · ${model} · ${transport} · ${revision} · ${mic}`
-
-  const mics = array?.mics?.map((m) => `${m.id}:${m.ok ? 'ok' : 'FAIL'}`).join('  ') ?? '—'
-  const calib = snap.calibration
-  const calibText = calib
-    ? `yaw ${calib.head_yaw_offset_deg}° · fov ${calib.camera_fov_deg}° · spacing ${calib.spacing_m} m · baseline ${calib.baseline_m} m · audio delay ${
-        calib.audio_delay_ms === undefined ? 'unmeasured' : `${calib.audio_delay_ms} ms`
-      }`
-    : 'pending — no array_status yet'
-  const presence: PresenceMsg | null = snap.presence
-  const latency =
-    wsStatus.latencyMs === null
-      ? 'no echo'
-      : `${wsStatus.latencyMs.toFixed(1)} ms (median ${(wsStatus.latencyMedianMs ?? 0).toFixed(1)} ms)`
-
-  diagBody.innerHTML = `
-    <dl>
-      <dt>connection</dt><dd>${wsStatus.state} · ${wsStatus.url}</dd>
-      <dt>received</dt><dd>${wsStatus.received} messages · ${wsStatus.unknownTypes} unknown · ${wsStatus.malformed} malformed</dd>
-      <dt>model</dt><dd>${model}${backend?.model_path ? ` · ${backend.model_path}` : ''} · ${backend?.classes ?? '—'} classes · ${backend?.sample_rate ?? '—'} Hz</dd>
-      <dt>model sha256</dt><dd class="wrap">${backend?.model_sha256 ?? '—'}</dd>
-      <dt>git rev</dt><dd>${revision}</dd>
-      <dt>transport</dt><dd>${transport}</dd>
-      <dt>mics</dt><dd>${mics}</dd>
-      <dt>calibration</dt><dd class="wrap">${calibText}</dd>
-      <dt>presence</dt><dd>${presence ? `${presence.human ? 'human' : 'none'} · ${presence.source ?? '?'}` : '—'}</dd>
-      <dt>render</dt><dd>${snap.fps.toFixed(1)} fps (5 s rolling) · dpr ${window.devicePixelRatio.toFixed(2)}</dd>
-      <dt>latency</dt><dd>${latency}</dd>
-      <dt>face tracking</dt><dd>${vision.status.state}${vision.status.delegate ? ` · ${vision.status.delegate}` : ''} · ${vision.status.analyzedFrames} frames (${vision.status.analyzedFps.toFixed(1)}/s${vision.status.inferenceMs === null ? '' : ` · ${vision.status.inferenceMs.toFixed(0)} ms/frame`}) · ${snap.faces.length} face(s)</dd>
-      <dt>mode</dt><dd>${mode} · ${snap.events.filter((e) => e.urgency === 'urgent').length} urgent active</dd>
-      <dt>events</dt><dd>${snap.counts.events} tracked · ${snap.counts.speeches} speech · ${snap.counts.mergedTimeline} merged from timeline · ${snap.counts.staleTimeline} stale ignored · ${snap.counts.rejected} rejected · ${snap.counts.backendRestarts} backend restarts</dd>
-      <dt>captions</dt><dd class="wrap">${snap.captions.length ? snap.captions.join('<br>') : '—'}</dd>
-      <dt>diagnostic</dt><dd class="wrap">${lastDiagnostic || '—'}</dd>
-      <dt>vision error</dt><dd class="wrap">${vision.status.lastError || '—'}</dd>
-    </dl>
-  `
-}
-
-// ---------------------------------------------------------------------------
-// Unanchored / degraded notices
-// ---------------------------------------------------------------------------
-function paintNotice(): void {
-  const snap = hud.snapshot()
-  const wsStatus = ws.status
-  const messages: string[] = []
-  let plate = ''
-
-  if (!snap.calibration) {
-    // No calibration means no marker can be placed honestly (README §4.5 makes
-    // `array_status.calibration` the mapping's source). Say which link is missing.
-    if (wsStatus.state !== 'open' && wsStatus.attempt === 0 && wsStatus.received === 0) {
-      plate = 'CONNECTING · waiting for the backend'
-      messages.push(`CONNECTING — ${wsStatus.url}`)
-    } else if (wsStatus.state === 'open' && wsStatus.received > 0) {
-      plate = 'CALIBRATION PENDING · backend sent no array_status.calibration'
-      messages.push('CALIBRATION PENDING — connected, but no `array_status.calibration` yet (§4.5)')
-    } else if (wsStatus.state === 'open') {
-      plate = 'CALIBRATION PENDING · waiting for array_status'
-      messages.push('CALIBRATION PENDING — connected, waiting for the first `array_status`')
-    } else if (wsStatus.state === 'blocked') {
-      plate = 'NO BACKEND · insecure override blocked'
-      messages.push(`NO BACKEND — ${wsStatus.lastError}`)
-    } else if (wsStatus.received > 0) {
-      plate = `FEED LOST · disconnected after ${wsStatus.received} messages`
-      messages.push(`FEED LOST — the backend at ${wsStatus.url} disconnected after ${wsStatus.received} messages; restart it`)
-    } else {
-      plate = 'NO BACKEND · nothing connected'
-      messages.push(`NO BACKEND — nothing answered on ${wsStatus.url}; start it with \`npm run mock\` (or B's server)`)
+const ws = new WsClient({
+  url: resolveWsUrl(),
+  onStateChange: (s) => {
+    wsState = s;
+    updateBanner();
+  },
+  onRttSample: (ms) => {
+    rttMs = ms;
+  },
+  onMessage: (msg: BackendMsg) => {
+    const nowS = performance.now() / 1000;
+    switch (msg.type) {
+      case "sound_event":
+        state.ingestSoundEvent(msg, nowS);
+        break;
+      case "speech":
+        state.ingestSpeech(msg, nowS);
+        break;
+      case "array_status":
+        state.ingestArrayStatus(msg);
+        calib = { ...msg.calibration };
+        break;
+      case "backend_status":
+        state.ingestBackendStatus(msg);
+        break;
+      case "timeline":
+        for (const ev of msg.events) {
+          // Each array element only gets the top-level `events` array itself
+          // checked by validateBackendMsg, not each entry -- re-validate here
+          // so one bad replay entry can't crash the render loop.
+          const validated = validateBackendMsg(ev);
+          if (!validated) {
+            console.warn("[ws] dropped malformed timeline entry", ev);
+            continue;
+          }
+          if (validated.msg.type === "sound_event") state.ingestSoundEvent(validated.msg, nowS);
+          else if (validated.msg.type === "speech") state.ingestSpeech(validated.msg, nowS);
+        }
+        break;
+      case "presence":
+        break; // not rendered yet; reserved for a future presence indicator
     }
-  }
-  if (vision.status.state === 'unavailable') {
-    messages.push('FACE TRACKING UNAVAILABLE — captions shown unanchored')
-  }
-  notice.hidden = messages.length === 0
-  notice.textContent = messages.join(' · ')
-  hud.setStatusLine(plate)
+  },
+});
+ws.start();
+updateBanner();
+
+for (const btn of document.querySelectorAll<HTMLButtonElement>(".mode-btn")) {
+  btn.addEventListener("click", () => {
+    const mode = btn.dataset.mode as Mode;
+    state.setMode(mode);
+    ws.send({ type: "set_mode", mode });
+    document.querySelectorAll(".mode-btn").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+  });
 }
-
-// ---------------------------------------------------------------------------
-// Camera (user-initiated; raw preview is never mirrored so bearing signs hold)
-// ---------------------------------------------------------------------------
-function describeCameraError(err: unknown): string {
-  const name = err instanceof DOMException ? err.name : ''
-  if (!window.isSecureContext) {
-    return 'Camera needs a secure context. Open this page over https:// (or http://localhost) — plain http over the LAN will not work.'
-  }
-  if (name === 'NotAllowedError' || name === 'SecurityError') {
-    return 'Camera permission denied. Allow camera access for this site, then retry.'
-  }
-  if (name === 'NotFoundError' || name === 'OverconstrainedError') {
-    return 'No usable camera found. Connect a camera (or use a device with one) and retry.'
-  }
-  return `Camera failed: ${err instanceof Error ? err.message : String(err)}`
-}
-
-async function startCamera(): Promise<void> {
-  cameraError.hidden = true
-  camButton.disabled = true
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    })
-    cameraStream = stream
-    video.srcObject = stream
-    await video.play()
-    cameraStarted = true
-    camButton.hidden = true
-    vision.start(video)
-    paintDiagnostics()
-  } catch (err) {
-    cameraErrorMessage.textContent = describeCameraError(err)
-    cameraError.hidden = false
-    lastDiagnostic = cameraErrorMessage.textContent
-  } finally {
-    camButton.disabled = false
-  }
-}
-
-camButton.addEventListener('click', () => void startCamera())
-cameraRetry.addEventListener('click', () => void startCamera())
-window.addEventListener('pagehide', () => {
-  cameraStream?.getTracks().forEach((t) => t.stop())
-})
-
-// ---------------------------------------------------------------------------
-// Boot
-// ---------------------------------------------------------------------------
-ws.connect()
-hud.setVision(vision.status.state, vision.faces)
 
 // ---------------------------------------------------------------------------
 // Microphone (§4.6 `audio`) — ON by default
 // ---------------------------------------------------------------------------
-// The backend's default source is the HUD's own microphone, so a phone or a Mac
-// becomes the sensor just by opening this page: the laptop's DMIC pair is a poor
-// array (channel 1 carries a 36%-of-full-scale DC offset and a sub-100 Hz rumble
-// 31 dB above channel 0's), and a phone is not attached to the chassis, so a clap
-// reaches it as airborne sound rather than a structural thump.
+// The backend's default source is this page's microphone (`--profile browser_mono
+// --source browser`), so a phone becomes the sensor just by opening the URL. Why:
+// the laptop's DMIC pair is a poor array (no inter-channel baseline, and channel 1
+// carries a DC offset and a sub-100 Hz rumble 31 dB above channel 0's), while a
+// phone is not attached to the chassis — a clap reaches it as airborne sound
+// instead of a structural thump.
 //
-// `?mic=0` turns it off, `?mic=1` forces it on (the default). getUserMedia needs a
-// secure context and, on iOS, a gesture — hence the button.
-const micButton = document.querySelector<HTMLButtonElement>('#mic-toggle')!
-const mic = new MicStream()
-const micWanted = params.get('mic') !== '0'
+// `?mic=0` turns it off. getUserMedia needs a secure context and, on iOS, a
+// gesture, so the button is also the retry path.
+const mic = new MicStream();
+const micBtn = document.getElementById("mic-btn") as HTMLButtonElement;
+const micWanted = new URLSearchParams(window.location.search).get("mic") !== "0";
 
-function paintMicButton(): void {
-  const s = mic.status
-  micButton.setAttribute('aria-pressed', s.state === 'running' ? 'true' : 'false')
-  micButton.dataset.state = s.state
-  micButton.textContent =
-    s.state === 'running'
-      ? `MIC ON · ${s.seconds.toFixed(0)}s`
-      : s.state === 'starting'
-        ? 'MIC STARTING…'
-        : s.state === 'error'
-          ? 'MIC — TAP TO RETRY'
-          : 'MICROPHONE'
+function paintMicButton() {
+  const s = mic.status;
+  micBtn.classList.toggle("active", s.state === "running");
+  micBtn.classList.toggle("error", s.state === "error");
+  micBtn.textContent =
+    s.state === "running" ? `mic ${s.seconds.toFixed(0)}s` : s.state === "starting" ? "mic..." : "mic";
+  micBtn.title =
+    s.state === "error" ? `microphone: ${s.lastError}` : "Stream this device's microphone to the backend (§4.6 audio)";
 }
 
-mic.onStatus = (status) => {
-  paintMicButton()
-  if (status.state === 'error') {
-    lastDiagnostic = `microphone: ${status.lastError}`
-    console.warn('mic:', status.lastError)
-  } else if (status.state === 'running') {
-    lastDiagnostic = `microphone streaming at ${status.sampleRate} Hz (${status.seconds.toFixed(1)}s sent)`
-    console.info(`mic: running @ ${status.sampleRate} Hz, ${status.frames} frames`)
+mic.onStatus = () => paintMicButton();
+paintMicButton();
+
+function startMic() {
+  void mic.start((base64, seq, rate, channels) => {
+    ws.send({ type: "audio", t: performance.now() / 1000, rate, channels, format: "pcm16", seq, data: base64 });
+  });
+}
+
+micBtn.addEventListener("click", () => {
+  if (mic.status.state === "running") {
+    mic.stop();
+    paintMicButton();
+    return;
   }
-  paintNotice()
-}
+  startMic();
+});
 
-function startMic(): void {
-  void mic.start((base64, seq, rate, channels) => ws.audio(base64, seq, rate, channels))
-}
+if (micWanted) startMic();
 
-micButton.addEventListener('click', () => {
-  if (mic.status.state === 'running') {
-    mic.stop()
-    paintMicButton()
-    return
+async function startCamera() {
+  try {
+    // Deliberately no width/height/aspectRatio constraints: asking for a
+    // specific (especially a tall-portrait) aspect ratio can push some
+    // phone cameras into a hardware-level crop/zoom to manufacture that
+    // ratio -- that was the actual cause of an earlier "too zoomed in, not
+    // natural 1x" bug. Plain facingMode gets whatever the camera's default
+    // (true 1x) mode is; object-fit: cover (style.css) then fills the
+    // screen with it edge-to-edge like a normal camera viewfinder, and
+    // whatever that crops is compensated for in the bearing math below
+    // instead (effectiveFovDeg), not avoided.
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" } },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+  } catch (err) {
+    // Non-fatal: keep the WS connection, debug panel and render loop alive
+    // even without a camera, so the HUD is still inspectable/testable.
+    setCameraBanner(`camera error: ${(err as Error).message}`);
+    console.warn("camera unavailable", err);
   }
-  startMic()
-})
-paintMicButton()
-
-if (micWanted) {
-  // Start as soon as the socket can carry the frames; on a browser that refuses
-  // without a gesture the button above is the retry path.
-  ws.onStatus = ((previous) => (status: Parameters<NonNullable<typeof ws.onStatus>>[0]) => {
-    previous(status)
-    if (status.state === 'open' && mic.status.state === 'off') startMic()
-  })(ws.onStatus)
 }
 
-renderConnectionBadge(ws.status.state, 0, ws.status.lastError)
-paintDiagnostics()
-paintNotice()
-setInterval(() => {
-  paintDiagnostics()
-  paintNotice()
-}, 250)
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = canvas.clientHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", resizeCanvas);
 
-// Read-only introspection for `web/dev/evidence.md` runs and manual debugging.
-Object.defineProperty(window, '__hud', {
+/**
+ * Nearest-face matching for each active speech bubble. A face "claims" a
+ * speech event when its bearing (derived from screen position) is within
+ * FACE_MATCH_TOLERANCE_DEG of the event's bearing. Preferring mouth-active
+ * faces is what separates a real speaker from a loudspeaker (README §6.3 C6):
+ * a playback source has no nearby face with a moving mouth, so it falls
+ * through to the "no face" / playback rendering path.
+ */
+const FACE_MATCH_TOLERANCE_DEG = 15;
+
+function computeFaceAnchors(
+  faces: DetectedFace[],
+  calibNow: Calibration
+): Map<string, FaceAnchor | null> {
+  const result = new Map<string, FaceAnchor | null>();
+  const faceBearings = faces.map((f) => ({ face: f, bearingDeg: screenXToBearingDeg(f.centerXNorm, calibNow) }));
+
+  for (const [speechId, s] of state.speech) {
+    const ev = state.events.get(s.parent_event);
+    const targetBearing = ev ? ev.renderBearing : s.bearing_deg;
+    let best: FaceAnchor | null = null;
+    let bestScore = -Infinity;
+    for (const fb of faceBearings) {
+      const diff = Math.abs(normalizeDeg(fb.bearingDeg - targetBearing));
+      if (diff > FACE_MATCH_TOLERANCE_DEG) continue;
+      const score = (fb.face.mouthOpen ? 1000 : 0) - diff;
+      if (score > bestScore) {
+        bestScore = score;
+        best = fb;
+      }
+    }
+    result.set(speechId, best);
+  }
+  return result;
+}
+
+let lastFrameT = performance.now();
+let fps = 0;
+let faceDetectBusy = false;
+let lastVisionSentMs = 0;
+
+async function detectFacesIfReady() {
+  if (!facesReady || faceDetectBusy) return;
+  faceDetectBusy = true;
+  try {
+    if (video.readyState >= 2) {
+      latestFaces = detectFaces(video, performance.now());
+      // §4.6 `vision`: hand the backend the boxes this page already computed, so
+      // it can produce a camera-backed bearing (there is one webcam and this page
+      // owns it). Throttled to 10 Hz — the backend ages frames out after 0.6 s,
+      // so faster would only be traffic.
+      const nowMs = performance.now();
+      if (nowMs - lastVisionSentMs >= 100) {
+        lastVisionSentMs = nowMs;
+        ws.send({
+          type: "vision",
+          t: nowMs / 1000,
+          faces: latestFaces.map((f) => ({
+            xc: f.centerXNorm,
+            w: f.bboxNorm.w,
+            mouth: f.mouthOpenScore,
+            mouthActive: f.mouthOpen,
+          })),
+        });
+      }
+    }
+  } finally {
+    faceDetectBusy = false;
+  }
+}
+
+function frame() {
+  const now = performance.now();
+  const dtS = (now - lastFrameT) / 1000;
+  lastFrameT = now;
+  fps = fps === 0 ? 1 / dtS : fps * 0.9 + 0.1 * (1 / dtS);
+
+  state.tick(now / 1000, dtS);
+  void detectFacesIfReady();
+
+  // Recomputed every frame: depends on the video's decoded size (only known
+  // once metadata loads) and the canvas's current CSS size (changes on
+  // resize/orientation change). object-fit: cover crops the video to fill
+  // the canvas, so two separate corrections are needed, both derived from
+  // the same crop window to stay consistent with each other:
+  const crop = computeCoverCrop(video.videoWidth, video.videoHeight, canvas.clientWidth, canvas.clientHeight);
+  // 1. Bearing math needs the narrower, actually-visible FOV, or markers
+  //    land at the wrong screen position.
+  const renderCalib: Calibration = { ...calib, camera_fov_deg: effectiveFovDeg(crop.w, calib.camera_fov_deg) };
+  // 2. Raw face-detection coordinates are normalized to the *full* video
+  //    frame, not the cropped, on-screen portion of it -- remap once here
+  //    so drawing code and the face->bearing match below can both just
+  //    treat them as plain canvas-normalized coordinates, same as before.
+  const facesOnScreen = latestFaces.map((f) => ({
+    ...f,
+    bboxNorm: {
+      x: videoNormToCropNorm(f.bboxNorm.x, crop.x, crop.w),
+      y: videoNormToCropNorm(f.bboxNorm.y, crop.y, crop.h),
+      w: f.bboxNorm.w / crop.w,
+      h: f.bboxNorm.h / crop.h,
+    },
+    centerXNorm: videoNormToCropNorm(f.centerXNorm, crop.x, crop.w),
+  }));
+
+  const renderStart = performance.now();
+  const faceAnchors = computeFaceAnchors(facesOnScreen, renderCalib);
+  drawOverlay(ctx, canvas, {
+    state,
+    calib: renderCalib,
+    faces: facesOnScreen,
+    faceAnchors,
+    wsState,
+    rttMs,
+    fps,
+    addedLatencyMs,
+  });
+  addedLatencyMs = performance.now() - renderStart;
+
+  requestAnimationFrame(frame);
+}
+
+(async () => {
+  resizeCanvas();
+  await startCamera();
+  try {
+    await initFaceLandmarker();
+    facesReady = true;
+  } catch (err) {
+    console.warn("face landmarker failed to load; bubbles will render without face anchoring", err);
+  }
+  requestAnimationFrame(frame);
+})();
+
+// Read-only introspection, used by docs/backend-evidence.md runs and by the
+// camera-FOV calibration measurement (`window.__hud.faces()`).
+Object.defineProperty(window, "__hud", {
   value: {
-    snapshot: () => hud.snapshot(),
-    ws: () => ws.status,
-    vision: () => vision.status,
+    ws: () => ({ state: wsState, rttMs }),
     mic: () => mic.status,
-    cameraStarted: () => cameraStarted,
+    faces: () => latestFaces,
+    calib: () => calib,
+    fps: () => fps,
   },
-})
+});

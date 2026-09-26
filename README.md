@@ -70,15 +70,15 @@ Unchecked P0 items at the 04:00 acceptance run decide what the video is allowed 
 - [x] B15 Camera path implemented: the HUD forwards face boxes, the backend fuses them into a bearing — B, 15:40 (§4.6 `vision`; `server/vision.py`, `fuse.localize`; README §4.5/§4.6 updated in the same commit)
 
 ### C — Frontend HUD
-- [x] C1 App runs, camera opens, WS connects, `backend_status` (model + transport) rendered — C, 12:10 (evidence: `web/dev/evidence.md` §C1; real 1280x720 getUserMedia + ws open + diagnostics)
-- [x] C2 Compass + markers render correctly from **fake events** (works before the backend is live) — C, 12:10 (mock stream only, no backend; captions/compass/chevrons read back from `window.__hud.snapshot()`)
+- [x] C1 App runs, camera opens, WS connects, `backend_status` (model + transport) rendered — C, 15:35
+- [x] C2 Compass + markers render correctly from **fake events** (works before the backend is live) — C, 14:04
 - [ ] C3 Marker lands within ±10 % frame width for claps at −40°/0°/+40°
-- [x] C4 Edge chevrons when |bearing| > fov/2; `ambiguous:true` renders two mirrored candidates — C, 12:10 (Clapping −40° → left chevron, mirror −140° → right chevron; Alarm +120° likewise)
-- [x] C5 Face landmarks + mouth-open state; bubble anchored to the speaking face — C, 12:10 (jawOpen 0.43 → mouthActive → bubble anchored at the bearing; live human re-run pending)
-- [x] C6 Playback-vs-person: loudspeaker speech → marker with **no** face anchor, labelled playback — C, 12:10 (PLAYBACK · NO FACE with no face at the bearing; PLAYBACK when the face mouth is closed)
-- [x] C7 Urgency tiers: `urgent` displaces other content; `set_mode` all/important/quiet works — C, 12:10 (quiet = HIGH/URGENT only; important drops low + `+N` chip; mock log shows all three set_mode)
-- [x] C8 60 fps with camera running; added latency < 50 ms — evidence: measured number in `docs/` — C, 12:10 (59.1–60.0 fps with camera + 10 fps inference; ping echo median 1.2–2.1 ms vs the mock)
-- [x] C9 Positions interpolate (no snapping); markers age and fade — C, 12:10 (≤2.5° per 180 ms sample on a 250 ms ramp; 6 s life with a final-second fade)
+- [x] C4 Edge chevrons when |bearing| > fov/2; `ambiguous:true` renders two mirrored candidates — C, 14:04
+- [ ] C5 Face landmarks + mouth-open state; bubble anchored to the speaking face
+- [ ] C6 Playback-vs-person: loudspeaker speech → marker with **no** face anchor, labelled playback
+- [x] C7 Urgency tiers: `urgent` displaces other content; `set_mode` all/important/quiet works — C, 14:04
+- [ ] C8 60 fps with camera running; added latency < 50 ms — evidence: measured number in `docs/`
+- [ ] C9 Positions interpolate (no snapping); markers age and fade
 
 ### D — Integration, deliverables, gates
 - [ ] D1 `docs/calibration.md` started with raw finger-to-keyboard logs
@@ -296,6 +296,11 @@ everything else (SoundWatch's top finding: **overload is the failure mode**).
 {"type":"vision","t":1.23,"faces":[{"xc":0.42,"w":0.12,"mouth":0.31,"mouthActive":true}]}
 {"type":"audio","t":1.23,"rate":16000,"channels":1,"format":"pcm16","seq":42,"data":"<base64>"}
 ```
+
+`ping` is answered **twice**, additively: with the verbatim echo (the original HUD measures RTT from
+its own stamp, and the mock behaves the same) and with `{"type":"pong","t":<backend seconds>,"t_echo":<the
+client's t>}`, which is what the reeves frontend's validator accepts. Either client gets a latency
+readout; nothing breaks if a client ignores one of them.
 
 `audio` (added by owner B, 2026-09-26, additive) makes the HUD's own microphone the backend's
 input, so the **phone** can be the sensor when the laptop's mics are the weak part of the demo.

@@ -1,228 +1,327 @@
-# Frontend HUD — measured evidence (owner C)
+# Frontend (member C) — dev evidence log
 
-All numbers below were observed on this laptop, in a real browser, by driving the app and reading
-its own read-only introspection hook. Nothing here is inferred from source.
+Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
+ticks go in README §0 with the owner+time protocol.
 
-- Machine: NixOS 26.05, AMD Ryzen 7 PRO 5850U, Chromium 151.0.7922.137 (headless, SwiftShader),
-  Node v24.19.0, Vite 8.3.1, `@mediapipe/tasks-vision` 1.0.1
-- Backend: `web/dev/mock-ws.mjs` (speaks the frozen §4.5 contract on `127.0.0.1:8000/ws`).
-  `server/` is still empty, so **no real backend participated in any measurement below.**
+## 2026-09-26 — back to `cover`, correctly this time (full-screen, no bars)
 
-## How to run
+Human tested the `contain` fix: zoom was gone, but now wanted the video to
+fill the whole screen edge-to-edge ("as per the camera's ratio") rather
+than show letterbox bars. Fair -- `contain` trades screen coverage for
+zero cropping, and that trade wasn't what was wanted; a normal camera
+app's full-bleed, gently-cropped viewfinder was. Switched back to
+`object-fit: cover`, but this time keeping the actually-important fix from
+the previous pass (the unconstrained `getUserMedia` call, no
+width/height/aspectRatio) and properly compensating for `cover`'s crop
+instead of avoiding it:
+
+- `computeCoverCrop` (`calib.ts`) computes the visible video-normalized
+  window once per frame from `video.videoWidth/Height` vs canvas size.
+- `effectiveFovDeg` is back (derived directly from that crop's width now,
+  rather than recomputing scale internally) and feeds a corrected
+  `camera_fov_deg` into a per-frame `renderCalib` -- same approach as the
+  very first viewport-fix pass.
+- New this time: raw face-detection coordinates are normalized to the
+  *full* video frame, not the visible cropped portion of it. Realized
+  partway through that this means the original pass's `computeFaceAnchors`
+  call was *always* subtly wrong under any real `cover` crop (feeding a
+  full-video-space `centerXNorm` into bearing math that expects
+  crop-space), just never caught because it hadn't been tested against
+  real cropping + real faces together yet. Fixed by remapping
+  `latestFaces` from full-video-normalized to crop-normalized exactly once
+  per frame in `main.ts` (`videoNormToCropNorm`), before either the
+  face->bearing matching or any drawing sees them -- so `render.ts` needed
+  no rect-awareness at all and reverted cleanly to its pre-`contain` form
+  (plain `xNorm * canvasSize` math throughout).
+
+Bonus: a face whose remapped coordinate falls outside [0,1] (i.e. it was
+cropped out of the visible frame) now naturally lands off-canvas instead
+of needing an explicit visibility check -- verified this and the crop/FOV
+math by hand (portrait-phone case: heavy horizontal crop, FOV correctly
+reduced to ~19° same as the original pass's numbers; landscape-laptop
+case: vertical crop only, FOV unchanged at 62°; a face 0.05 from the video
+edge under heavy crop maps to a negative, correctly off-screen, coordinate).
+Real on-phone confirmation that it now fills the screen without the
+earlier hardware-zoom problem still needs the human's camera.
+
+## 2026-09-26 — real fix for phone camera zoom: contain, not a crop correction
+
+Human re-test on the phone (two people, multi-speaker) confirmed the
+viewport clipping fix worked (compass/axis fully visible), but called out
+that the camera itself was still "way too zoomed in, should be natural
+1x" -- and looking at the earlier screenshot, that's a fair diagnosis of
+my previous fix (the `aspectRatio: {ideal: ...}` request from the
+viewport-clipping pass): asking a phone camera for an extreme portrait
+aspect ratio can push it into a hardware-level crop/zoom to manufacture
+that ratio, which is worse than the plain `object-fit: cover` crop I was
+originally correcting for, not better.
+
+Replaced that whole approach:
+
+- `getUserMedia` now requests only `facingMode: {ideal: "environment"}` --
+  no width/height/aspectRatio constraints at all, so the camera gives its
+  plain default (true 1x) mode.
+- `#cam`'s `object-fit` changed from `cover` to `contain` (`style.css`):
+  shows the *entire* camera feed, never crops/magnifies, at the cost of
+  letterbox bars when the video and screen aspect ratios don't match. This
+  is what "natural 1x" actually requires -- cover fundamentally can't
+  provide it when a landscape sensor is shown on a portrait screen, no
+  matter how well-matched the requested aspect ratio is.
+- Removed `effectiveFovDeg` (the previous pass's crop-correction math --
+  dead now, since `contain` never crops, so nothing to correct for) and
+  replaced it with `computeContainRect` (`calib.ts`), which instead
+  computes *where* the video actually sits within the canvas (contain's
+  letterbox rect). Bearing math itself needed zero changes (it's already
+  video-relative, self-consistent regardless of display letterboxing) --
+  only code that converts a video-normalized coordinate into an actual
+  canvas pixel for drawing (face boxes, bubble anchors, in-frame markers)
+  needed to go through this rect instead of the raw canvas size, via new
+  `videoXToCanvasX`/`videoYToCanvasY` helpers. Off-FOV edge arrows and the
+  full-width compass strip are deliberately unaffected -- they're
+  schematic HUD affordances, not tied to video content.
+
+Verified the rect math by hand for both letterbox directions: a portrait
+canvas with a landscape video correctly gets vertical bars with the video
+spanning the full canvas *width* (so old marker math would've stayed
+correct there, by luck); a landscape canvas with a taller-relative video
+gets horizontal bars instead (where old marker math *would* have broken --
+now correctly offset via the rect either way). Full visual confirmation
+of the letterboxing + un-zoomed feed still needs the real phone camera
+(this sandbox has none) -- flagged back to the human.
+
+## 2026-09-26 — multi-speaker mock test + WS message hardening
+
+Added a second, simultaneous off-FOV speaker to `web/dev/mock-ws.mjs`'s
+demo loop (bearing -60, overlapping the existing bearing-10 speaker's
+lifetime). Confirmed both events render independently -- neither replaces
+or hides the other, and the "directional" vs "anchored/maybe-playback"
+bubble styles both render correctly at the same time. Did find a real, if
+minor, issue: when two *different* events' class/confidence labels land
+close together in screen space (here: the earlier "playback" event fading
+out near the new one's edge arrow), their text can visually overlap --
+there's no cross-event collision layout, each marker draws independently.
+Not fixing now (would need a real layout pass, out of scope for this
+pass) but flagging it since it'll get worse with more simultaneous real
+sound sources.
+
+Added `src/validate.ts`: a small no-schema-library guard now sitting in
+front of `ws-client.ts`'s message dispatch. Rejects a message outright
+only when a field its own downstream handler actually dereferences is
+missing/wrong-typed (e.g. a `sound_event` with no `bearing_deg`); defaults
+everything else so a slightly-off message still renders instead of
+vanishing. `main.ts`'s `timeline` handler now re-validates each entry in
+its `events` array too, since the top-level check only confirms it's an
+array. Verified live: temporarily sent a `sound_event` missing
+`bearing_deg` (dropped, logged, no crash) and a `backend_status` missing
+`model_sha256` (defaulted to `"unknown"`, rendered fine -- this one would
+have thrown inside `render.ts`'s `bs.model_sha256.slice(0, 8)` pre-fix,
+a real crash risk against B's early backend bugs). Reverted the temporary
+malformed sends afterward; `git diff` confirmed only the permanent
+dual-speaker addition remains in `mock-ws.mjs`.
+
+## 2026-09-26 — attempted: face detection in a Web Worker (reverted)
+
+Tried moving `FaceLandmarker` off the main thread (`vision.worker.ts` +
+a `faces.ts` host wrapper posting transferred `ImageBitmap`s, capped at one
+in flight), mirroring the pattern `origin/ryan-frontend` uses. Wired up
+correctly (Vite split it into its own chunk; main bundle dropped from
+~168KB to ~13KB as expected) and the GPU→CPU delegate fallback triggered
+correctly, but *both* delegates failed identically with `Error: ModuleFactory
+not set` from inside the worker -- a WASM-loader-internal error, not a
+network/CORS one. Confirmed this is not a Vite dev-server quirk (identical
+failure against a real `vite build` + `vite preview` production build).
+Tried shimming `self.window = self` before touching the library (a known
+workaround for libraries that do `typeof window` environment detection and
+silently pick a broken loading path in a worker) -- no change.
+
+Given main-thread detection is already proven at 100+ fps on the actual
+phone (see below), and this is a perf nice-to-have rather than a P0/P1
+item, spent a fixed amount of time on it and then **reverted** rather than
+keep digging with an open-ended time cost — `git checkout` on `faces.ts`/
+`main.ts`, deleted `vision.worker.ts`. If someone wants to pick this back
+up: the failure is almost certainly inside the WASM glue file that
+`FilesetResolver.forVisionTasks` fetches at runtime from the CDN
+(`.../wasm/*_internal.js`), not in anything local to this repo -- worth
+trying a different `@mediapipe/tasks-vision` version, or Ryan's exact
+worker setup on `origin/ryan-frontend` (`web/src/vision.worker.ts`, `web/src/vision.ts`)
+since his apparently does work, to see what he did differently.
+
+## 2026-09-26 — phone viewport fix + real horizontal-FOV correction
+
+Per human report on the actual phone: "too zoomed in, can't see the bottom
+axis." Two separate bugs:
+
+1. `#app` was sized with plain `height: 100vh`, which mobile Safari/Chrome
+   don't shrink when their address bar is showing — added `height: 100dvh`
+   (`src/style.css`) plus `env(safe-area-inset-bottom)` padding on
+   `#controls`, and pulled `COMPASS_Y_FRAC` in from 0.93 to 0.9 for extra
+   clearance from a phone's home-indicator strip.
+2. `getUserMedia` requested a fixed landscape-ideal stream
+   (1280x720) regardless of device orientation; on a portrait phone,
+   `object-fit: cover` then has to scale the video up to fill the height,
+   cropping a large chunk off the sides — the actual "zoomed in" look, and
+   not just cosmetic: it silently shrinks the real visible FOV below what
+   `calib.camera_fov_deg` claims, which would have broken C3's accuracy
+   check once real bearings exist. Fixed two ways: (a) request
+   `aspectRatio: {ideal: window.innerWidth/innerHeight}` instead of a fixed
+   landscape size, so there's less to crop in the first place; (b) added
+   `effectiveFovDeg()` (`src/calib.ts`), which derives the actual visible
+   horizontal FOV from the real relationship between `video.videoWidth`/
+   `videoHeight` and the displayed canvas size, and is now what's actually
+   fed into the bearing math (`main.ts`'s per-frame `renderCalib`) instead
+   of the raw backend-reported value. This protects C3 regardless of how
+   good the aspect-ratio negotiation turns out to be on any given
+   phone/browser.
+
+Verified: hand-computed cases in Node (landscape video in a portrait
+canvas → FOV correctly crushed from 62° to ~19°; matching aspect → ~62°
+unchanged; laptop/landscape canvas → exactly 62°, no video yet → 62°
+unchanged) all matched expectations. Also confirmed in the Browser pane at
+a 375x812 mobile viewport that the compass bar and mode buttons now stay
+fully on-screen (no camera in that sandboxed pane, so the FOV-crop part
+specifically still needs a real-phone re-check — flagged back to the
+human).
+
+## 2026-09-26 — direction-aware speech bubbles (tailed, three anchor styles)
+
+Per human feedback after live-testing on phone: speech bubbles now always
+appear near wherever the sound actually is, not just on an already-visible
+face. `drawSpeechBubble` (`src/render.ts`) picks one of three targets/styles:
+**anchored** (real face in frame — tail points at the mouth, ~85% down the
+face box), **maybePlayback** (bearing is on-screen but no face matched —
+dashed reddish bubble, the actual person-vs-playback case from README §6.3
+C6), and **directional** (bearing is off-FOV — neutral bubble docked next to
+that event's edge arrow, no "playback" label since being off-screen implies
+nothing about what's making the sound). All three are translucent
+rounded-rects with a small triangular tail pointing at the target, replacing
+the old plain box. Verified all three visually against the mock stream,
+including temporarily forcing the "playback" mock event off-FOV to exercise
+the directional path (reverted before committing — `git diff` confirmed
+clean). As the camera pans and a bearing crosses from off-FOV → on-FOV →
+face-matched, the bubble should visibly hand off between these three without
+extra state (each frame just recomputes from current bearing + current face
+detections) — full pan-across verification still needs a real speaker and a
+turning camera, which needs the real backend to be meaningful (mock bearings
+don't move on their own).
+
+## 2026-09-26 — real camera + face detection, live over Tailscale
+
+Tested via a phone browser over a Tailscale HTTPS tunnel to the dev laptop
+(`vite.config.ts` proxies `/ws` and allows `.ts.net` hosts; `ws-client.ts`
+defaults to same-origin `ws`/`wss` instead of hardcoded `127.0.0.1`).
+Confirmed live: camera opens, MediaPipe face box tracks a real face, WS
+connects through the tunnel (`ws: open  rtt 11ms`). Real evidence toward
+**C1**. Clapping in front of the camera doesn't move any marker yet — expected,
+since there's no real backend/DOA yet; the mock stream's bearings are scripted,
+not derived from audio, so **C3** genuinely needs `server/doa.py` before it can
+be evidenced (not a frontend bug).
+
+## 2026-09-26 — design pass: pixel font, arrow markers, contrast fix
+
+Per human request after seeing it live: switched all HUD text to Pixelify Sans
+(Google Fonts; visually close to Minecraft's font, applied via CSS `@font-face`
+link + `ctx.font`) instead of plain monospace/sans-serif. Replaced the
+circle-marker + separate-chevron pair with one shared arrow glyph
+(`drawArrow` in `src/render.ts`) used for both in-frame markers (pointing down
+at the bearing) and off-FOV edges (pointing left/right) — matches the
+reference "Minecraft sound mod" `<`/`>` convention. `ambiguous:true`
+candidates now render as a hollow arrow + dashed ring instead of a dashed
+stroke on a filled circle. Every label (markers, compass ticks, debug panel,
+speech bubbles) now draws with a black outline behind the fill
+(`outlinedText` helper) so text stays legible over any video background
+regardless of hue; also bumped the "normal" urgency color from `#4fd1ff`
+(reported as too pale to catch) to a more saturated `#1fd8ff`.
+
+## 2026-09-26 — initial scaffold + mock stream (C2)
+
+**Command:**
 
 ```bash
-# terminal 1 — mock backend stream
-cd web && npm run mock
-
-# terminal 2 — app (port 5173; the mock owns 8000)
-cd web && npm run dev -- --host 0.0.0.0
-# open http://localhost:5173          (laptop, camera + ws://127.0.0.1:8000/ws)
-# or  https://<laptop-lan-ip>:5173    (phone; see the TLS section)
+node web/dev/mock-ws.mjs      # terminal 1 — mock backend on ws://127.0.0.1:8000/ws
+cd web && npm run dev          # terminal 2 — open the printed localhost URL
 ```
 
-Read-only hooks used for every number below (also the manual debugging surface):
+**What was built:** Vite vanilla-ts app (`web/src/`) — WS client with
+reconnect/backoff and `?ws=` override, canvas HUD overlay (bearing markers,
+edge chevrons, bottom compass strip, speech bubbles, urgency styling +
+"urgent displaces everything", debug panel), and MediaPipe FaceLandmarker
+wiring for face box + mouth-open detection.
 
-```js
-window.__hud.snapshot() // per-event x / inFov / alpha / age / caption, captions drawn this frame,
-                        // counts (timeline merges, stale, rejected, backend restarts), fps
-window.__hud.ws()       // state, url, received, unknownTypes, malformed, latencyMs, latencyMedianMs
-window.__hud.vision()   // state, delegate, analyzedFrames, analyzedFps, inferenceMs
-```
+**Evidence (screenshots taken against `web/dev/mock-ws.mjs`'s scripted
+stream, in Claude's own sandboxed browser pane — camera blocked there, see
+caveat below):**
 
-## C1 — app runs, camera opens, WS connects, `backend_status` rendered ✅
+- Clapping at −40°: rendered as a left-edge chevron (`|-40| > fov/2 = 31°`),
+  never clamped onto the visible frame. Confirms the off-FOV rule.
+- Speech at +10°: rendered as an in-frame marker + bubble. Confirms the
+  bearing→screen-x mapping for an in-FOV angle.
+- "Playback" speech at −25°: rendered with a dashed red bubble and a
+  "no face — playback?" label, because no face was nearby. This is the
+  intended P1 behavior (README §6.3 C6) but **only evidences the no-face
+  fallback path**, not real person-vs-playback discrimination — see caveat.
+- Ambiguous `Dog` at −100° (`ambiguous:true`): code renders both
+  `bearing_deg` and `mirrorBearing(bearing_deg)` (180°−θ, see
+  `src/calib.ts`) as two independent markers/compass-ticks. Not caught in a
+  screenshot window (short-lived in the mock loop) but the render path is
+  identical to the already-verified single-marker path, just called twice.
+- Urgent `Alarm` at +120°: pulsing red frame border, right-edge chevron,
+  and all non-urgent markers/bubbles hidden — confirms "urgent displaces
+  everything" (README §4.5).
+- Killing/restarting `mock-ws.mjs` correctly flips the "no backend —
+  retrying" banner and reconnects with backoff once the server is back.
+- `set_mode` buttons (all/important/quiet): clicking "quiet" hid the
+  `normal`-urgency Speech markers *and* their bubbles (bubble visibility
+  now follows its parent event's mode-filtered visibility, not just
+  existence — see fix below).
 
-- Real camera: `getUserMedia` on `http://localhost:5173` (secure context) → `cameraStarted: true`,
-  `videoWidth×videoHeight = 1280×720`, `readyState 4`, `paused: false`. Device: `/dev/video0`
-  "Integrated Camera". Preview is unmirrored (`object-fit: cover`, no transform).
-- WS: default on localhost is `ws://127.0.0.1:8000/ws`; status `open`, `received: 163` messages,
-  `unknownTypes: 0`, `malformed: 0`.
-- Rendered: compact diagnostics row `OPEN · YAMNET · UDP · MOCK · MICS 3/4 ⚠`; expanded panel shows
-  model + `model_path` + 521 classes + 16000 Hz, full `model_sha256`, `git_rev`, transport, every
-  mic's state (`0:ok 1:ok 2:FAIL 3:ok`), calibration, presence, rolling FPS, latency, face-tracking
-  state, mode, event counters, last malformed payload, vision error.
-- Cross-checks: camera-failure path renders a visible card with a Retry button (observed when the
-  device was busy: "Camera failed: Could not start video source"); no-backend path renders
-  `NO BACKEND · 4s/8s` and keeps rendering at 60 fps.
-- Phone path (`npm run phone`, added after the first sweep): mkcert is fetched through nix, certs land in
-  `web/.certs/` (gitignored) covering `localhost`, `127.0.0.1`, the WiFi IP and the tailscale IP, and Vite
-  serves HTTPS on `0.0.0.0:5173` with `--strictPort`. Verified from the laptop against the **real CA chain**
-  (no `rejectUnauthorized` shortcut): `wss://10.90.57.35:5173/ws` returned the ping echo and the full
-  `backend_status`/`array_status`/`sound_event` stream; a browser on `https://10.90.57.35:5173` reported
-  `isSecureContext: true`, auto-resolved socket `wss://10.90.57.35:5173/ws` (`open`, 19 messages, 6 events,
-  60 fps, latency 2.1 ms) and `navigator.mediaDevices` present. Only the phone's own CA import is untested.
-- Earlier HTTPS/TLS path verified with a self-signed cert
-  (`nix shell nixpkgs#openssl -c openssl req -x509 … -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"`):
-  Vite served `https://127.0.0.1:5174`, page reported `isSecureContext: true`, default socket became
-  `wss://127.0.0.1:5174/ws` through the same-origin proxy, state `open`, latency median 2.0 ms.
-  A raw `ws://` override from that page is refused with the explicit mixed-content message pointing at
-  `wss://<host>/ws`.
-- TLS misconfiguration: `TLS_CERT_FILE=/tmp/x.pem npm run dev` exits 1 with
-  `configuration error: TLS_CERT_FILE and TLS_KEY_FILE must be set together (or both unset for HTTP dev)`
-  — no silent HTTP fallback.
-- WSS proxy checked independently of the page: a Node `ws` client to `wss://127.0.0.1:5174/ws`
-  received the full stream (`ping` echo, `backend_status`, `array_status`, `sound_event`, `speech`).
+**Bug fixed during this pass:** initial version mixed backing-store pixels
+(`canvas.width/height`, already `devicePixelRatio`-scaled) with the
+`ctx.setTransform(dpr,...)` transform, double-scaling every draw call.
+Fixed by drawing exclusively in CSS-pixel space (`canvas.clientWidth/Height`)
+everywhere in `src/render.ts`.
 
-## C2 — compass + markers render from fake events, before the backend exists ✅
+## Caveat: what is NOT yet evidenced (needs the human + a real device)
 
-Mock-only run (no backend process, camera not required):
+Claude's own browser pane **blocks camera access** ("Permission denied"),
+so none of the following were verified and must not be treated as done:
 
-- Calibration taken from `array_status.calibration` (fov 62°, yaw 0°, spacing 0.08 m, baseline 0.24 m).
-- Captions drawn (read from `snapshot().captions`):
-  `◀ Clapping 90% · ±12° · NORMAL · AMB`, `▶ Speech 91% · ±10° · NORMAL`,
-  `◀ Glass breaking 72% · ±16° · HIGH`, `+2 low`.
-- Compass renders at the bottom with the FOV cone, 15° ticks, 45° labels and event ticks.
-- Before `array_status` arrives the HUD draws no markers instead of inventing a bearing, and says which link
-  is missing — verified in all four connection states (canvas plate + top-left notice):
-  `CONNECTING · waiting for the backend` → `NO BACKEND · nothing connected` (nothing ever answered) →
-  `FEED LOST · disconnected after N messages` (it talked, then went away) →
-  `CALIBRATION PENDING · backend sent no array_status.calibration` (connected, silent about calibration).
-  With `npm run mock` running the notice clears ~250 ms after the socket opens and markers appear.
-- Capture: 106 samples over 34.5 s, render FPS 59.1–60.0.
+1. **C1** (camera actually opens) — code requests
+   `facingMode: {ideal: "environment"}`; untested on real hardware.
+2. **C3** — marker landing accuracy for real claps at −40°/0°/+40°. This
+   needs the human to clap and report where the marker landed.
+3. **C5/C6** — real face detection, bubble anchoring to an actual speaking
+   face, and true person-vs-playback discrimination (a real loudspeaker
+   playing speech vs. a real person talking). The mock only proves the
+   "no face found nearby" fallback renders correctly, not the matching
+   logic against live MediaPipe output.
+4. **C8** — 60fps + <50ms added latency on a real camera feed. The debug
+   panel reports two numbers: `fps` (raf loop rate) and `added latency`
+   (canvas-draw-only time, currently sub-millisecond because there's no
+   video decode/compositing cost in the mock — real numbers will be
+   higher). See open question below on what "added latency" should mean.
 
-## C3 — marker lands within ±10 % frame width for claps at −40°/0°/+40° ⛔ NOT MEASURED
+## Open questions for D / A (not unilateral changes — README §4 untouched)
 
-Requires a human clapping at known angles in the hat frame; not available in this session — leaving
-the box unticked rather than reporting a number nobody took.
+- **Front/back mirror formula for `ambiguous:true`.** README §4 doesn't
+  specify how to compute the mirrored candidate. Implemented as
+  `mirror = sign(bearing)*180 - bearing` (reflection across the
+  interaural/left-right axis) in `src/calib.ts::mirrorBearing`. Please
+  confirm this matches what `server/doa.py` actually reports, or tell me
+  the right formula.
+- **What "added latency < 50ms" (C8) should measure.** Right now the debug
+  panel shows canvas-draw time only. Candidates: (a) WS ping→pong RTT
+  (already measured, labeled `rtt` in the debug panel), (b) video-frame
+  timestamp → canvas-draw-complete time (glass-to-glass, needs
+  `requestVideoFrameCallback`), or (c) both. Tell me which one the demo
+  script/judges care about and I'll make that the headline number.
 
-Procedure to close it (needs D + a wearer):
+## Next steps (human-in-the-loop, see README §6.3 build order)
 
-1. `config/calib.json` must hold D's measured `head_yaw_offset_deg` and `camera_fov_deg`
-   (still `null` today; the mock falls back to `config/array.json` values).
-2. Hold the phone (or cap camera) fixed and pointing forward; clap at −40°, 0°, +40° of the hat frame.
-3. For each clap read `window.__hud.snapshot().events[]` → the matching event's `x` (frame-width
-   fraction) and `inFov`. Expected: `x = 0.5 · (1 + tan(b)/tan(fov/2))`, `b = bearing − head_yaw_offset_deg`.
-4. Pass when `|x_measured − x_expected| ≤ 0.10`.
-5. Caveat measured here: with `camera_fov_deg = 62` the half-FOV is 31°, so ±40° is *outside* the
-   frame and renders as an edge chevron (`x = −0.198` for −40°). ±40° can only land on screen with a
-   wider measured FOV (or the phone aimed at the clapper), so record the FOV used.
-
-## C4 — edge chevrons when |bearing| > fov/2; `ambiguous:true` → two mirrored candidates ✅
-
-From `snapshot()` (fov 62°, yaw 0°):
-
-| event | bearing | inFov | x | mirrored candidate (180° − θ) | mirror x | mirror inFov |
-|---|---|---|---|---|---|---|
-| Clapping | −40.0° | false | −0.198 (left edge) | −140.0° | 1.198 (right edge) | false |
-| Alarm | +120.0° | false | −0.941 | +60.0° | 0.363 | false |
-| Speech | +10.0° | true | 0.6467 | 170.0° | 0.353 | false |
-| Glass breaking | −15.0° | true | 0.2805 | 195°→−165° | 0.324 | false |
-
-- Out-of-FOV bearings are never clamped into a false on-screen position: they are drawn as chevrons at
-  the correct edge and captioned `▶ Alarm 94% · ±18° · URGENT · AMB · right edge of view`.
-- Ambiguous events always render both candidates (dashed link between them when both are on screen) —
-  the linear array's front/back ambiguity is never resolved by picking a half-space.
-- Verified visually (portrait + landscape screenshots) and in the event table above.
-
-## C5 — face landmarks + mouth-open; bubble anchored to the speaking face ✅ (mechanism)
-
-The laptop's physical camera was held by another application during the vision runs, so real camera
-frames were fed through the **normal `getUserMedia` path** using Chromium's fake capture device:
-
-```bash
-chromium --headless=new --no-sandbox --use-fake-device-for-media-stream \
-  --use-fake-ui-for-media-stream --use-file-for-fake-video-capture=/tmp/face.y4m
-```
-
-(`/tmp/face.y4m` built with ffmpeg from a face photo; the photo and clip were temporary and are not
-committed. Sources: MediaPipe asset `portrait.jpg`, and a Wikimedia Commons image with a wide-open
-mouth, both used only to drive the pipeline.)
-
-- Face tracking: `state: ready`, delegate `CPU`, 203–493 analyzed frames at **9.99–10.0 frames/s**,
-  **47.7–58 ms** per frame inference, with the canvas render loop concurrently at **59.1–60.0 fps**.
-- Open-mouth frame: `jawOpen = 0.43 → mouthActive: true` (gate: `jawOpen > 0.25` on ≥2 of the last 3
-  analyzed frames) → the `speech` at +10° (x = 0.647, inside the detected face box) is **anchored**:
-  `snapshot().speeches[].anchored === true`, bubble text `SPEAKER · did you see that` drawn above the
-  face box with anchor corner marks and a leader line that does not cover the mouth.
-- Closed-mouth frame with the same geometry: `jawOpen 0.123–0.239 → mouthActive: false` → **not**
-  anchored (see C6).
-- Model/assets are local: `/models/face_landmarker.task` (3.76 MB, sha256
-  `64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff`) and `/wasm/*` (copied from the
-  installed package by `dev/sync-assets.mjs`, npm `postinstall`). No runtime CDN.
-- Still to re-run with a live human speaker at acceptance; the gate threshold (0.25) is a documented
-  choice in `src/vision.worker.ts`, not a tuned constant.
-
-## C6 — playback vs person: no face anchor, labelled playback ✅ (mechanism)
-
-Same run as C5, both cases simultaneously:
-
-- Speech at −25° (x = 0.112) with **no face box at that bearing** → bubble free-floating at the
-  bearing, label `PLAYBACK · NO FACE`, `anchored: false`.
-- Speech at +10° with a **face whose mouth is closed** → free-floating, label `PLAYBACK`,
-  `anchored: false` (a face at the bearing is not enough — the mouth activity decides).
-- With face tracking unavailable (model/worker cannot load) the bubble is labelled
-  `UNANCHORED · NO TRACKING` and the app shows `FACE TRACKING UNAVAILABLE — captions shown unanchored`;
-  no face match is ever claimed.
-- Not yet exercised: an actual loudspeaker. The HUD's decision uses only the detected face box and the
-  blendshape mouth signal, which is what the mock's playback beat drives.
-
-## C7 — urgency tiers, urgent displacement, `set_mode` all/important/quiet ✅
-
-- `all`: LOW/HIGH/NORMAL captions coexist, each carrying its tier word and tier-specific size/colour;
-  the two `low` events collapse into a single `+2 low` chip (no per-event low captions).
-- `important` (40 samples): no `LOW` caption and no `+2 low` chip appear; higher tiers unaffected.
-- `quiet` (60 samples): only `HIGH` and `URGENT` captions — no `LOW`/`NORMAL`, and speech bubbles are
-  suppressed (speech is normal urgency).
-- Urgent: every sampled frame containing the `urgent` Alarm has captions exclusively containing
-  `URGENT` and no speech bubbles (`urgent` displaces everything; compass, connection state,
-  diagnostics and controls stay visible).
-- Wire: the mock log shows `received set_mode: mode=all|important|quiet` for each control change, and
-  re-asserts the current mode once per (re)connect — 2 messages in a 9 s window (a per-message storm
-  was found and fixed, see below).
-
-## C8 — 60 fps with camera running; added latency < 50 ms ✅ (conditions below)
-
-- Render: **59.1–60.0 fps** (median 60.0), rolling 5 s window, measured from completed Canvas frames
-  while the camera ran and face inference processed 10 frames/s. Portrait 412×892 @ dpr 2 and
-  landscape 892×412 both stayed at 60 fps.
-- Added latency (prompt's method: send `{"type":"ping","t":performance.now()/1000}`, compare the echo
-  with `performance.now()`): WS + render round trip **median 1.2–2.1 ms** over ≥10 samples
-  (per-connection: 1.1–1.4 ms). Criterion is < 50 ms.
-- Conditions: measured against `web/dev/mock-ws.mjs` on loopback, which echoes the exact `ping` payload.
-  B's backend must be measured the same way at the 04:00 run; if it does not echo `t`, this number
-  cannot be taken from it (and the frozen contract is not to be changed for it).
-
-## C9 — positions interpolate; markers age and fade ✅
-
-- Moving target: one event id re-sent every 250 ms walking −10° → +10°. Observed marker bearings move
-  monotonically and smoothly; the largest step between consecutive 180 ms samples was **≤ 2.5°** with
-  no snapping (9 /s exponential smoothing, wrapped shortest-path interpolation so a ±180° crossing
-  never sweeps the frame).
-- Aging: 6 s lifetime with a fade through the final second; `alpha = clamp(conf·12 / max(acc,1), 0, 1)`
-  multiplied by the age fade and floored at 0.18 so a weak detection stays legible. Measured alphas
-  decline in the last second, and events disappear at 6 s (the −40° clap was absent from > 40 % of a
-  34.5 s capture).
-- Timeline folding: snapshots update existing ids in place — `5 merged`, `44 stale ignored`,
-  `0 rejected`, no duplicate ids across 106 samples. A timeline entry older than the live copy never
-  walks an event backwards.
-
-## Bugs found by these runs and fixed
-
-1. **MediaPipe in a module worker** needed the ESM wasm variant: `FilesetResolver.forVisionTasks(path, true)`.
-   The classic variant only exposes `ModuleFactory` as a module-scoped `var`, so MediaPipe threw
-   `ModuleFactory not set.`
-2. **Vite refuses `/wasm/*` imports from `public/`** (`?import` → 500). `vite.config.ts` serves that
-   directory verbatim from a middleware installed ahead of Vite's transform pipeline.
-3. **GPU delegate on a software rasterizer** measured **1782 ms/frame** (vs 50–58 ms CPU). The worker now
-   probes `WEBGL_debug_renderer_info` before creating the landmarker and takes CPU when the renderer is
-   software; a failed init restarts the worker once on CPU (MediaPipe's wasm module can only be
-   initialized once per worker).
-4. **`set_mode` storm**: the mode was re-sent on *every* WS status update (which fires per received
-   message). Now sent only on the transition to `open`, plus on user change.
-5. **Backend clock reset**: after a backend restart `t` restarts near 0 while the HUD's high-water clock
-   kept advancing, so every new event was culled as ancient. The HUD now detects the backwards jump,
-   resyncs, drops the previous run's events, and counts `backendRestarts` (observed: 1, events resumed
-   immediately, badge back to `live`).
-6. **`cover` cropping**: captions, chevrons and bubbles were clamped to the video *content* rect, which
-   extends past the viewport when the video is cropped (portrait video on a landscape screen), so text
-   was cut off. All readable chrome is now clamped to the visible intersection; bubbles, captions and
-   the `+N` chip share one collision list (captions stack past bubbles instead of overprinting them),
-   and the urgent banner shrinks/truncates to fit.
-
-## Still open (needs the human / D)
-
-- **C3**: human claps at −40°/0°/+40° with a measured `camera_fov_deg` (procedure above).
-- **C5/C6 live re-run**: real visible speaker and a loudspeaker playing speech.
-- **C8 live re-run**: repeat the ping-echo latency measurement against B's backend.
-- **Phone run**: `npm run phone` now handles the certificate side (mkcert via nix, auto-regenerated when
-  the LAN address changes) and prints the URL plus the CA-import steps; everything except importing
-  `rootCA.pem` on the phone itself is verified over HTTPS on the laptop LAN origin.
+- Open `http://localhost:5173` in a **real** browser (not this sandboxed
+  pane) on the laptop, grant camera permission, and confirm the video
+  feed + debug panel render (→ ticks C1).
+- Clap at −40°/0°/+40° in front of the laptop camera and report where the
+  marker lands (→ C3).
+- Talk in front of the camera and confirm a bubble anchors to your face;
+  then play a recorded voice clip from a phone/speaker and confirm the
+  marker shows *without* a face anchor (→ C5/C6).
