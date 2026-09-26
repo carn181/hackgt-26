@@ -1,7 +1,14 @@
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 
-const WASM_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
-const MODEL_URL =
+// Assets are loaded from our own origin first: `dev/sync-assets.mjs` copies the
+// version-matched WASM out of node_modules into public/wasm on `npm install`, and
+// public/models/face_landmarker.task is committed. That removes the runtime CDN
+// dependency, which matters in a hall where 2.4 GHz is jammed (README §12). The
+// CDN stays as a fallback so a checkout without node_modules still works.
+const WASM_LOCAL = "/wasm";
+const WASM_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
+const MODEL_LOCAL = "/models/face_landmarker.task";
+const MODEL_CDN =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 
 const MOUTH_OPEN_THRESHOLD = 0.3;
@@ -20,15 +27,32 @@ let initPromise: Promise<FaceLandmarker> | null = null;
 export function initFaceLandmarker(): Promise<FaceLandmarker> {
   if (initPromise) return initPromise;
   initPromise = (async () => {
-    const fileset = await FilesetResolver.forVisionTasks(WASM_BASE);
-    landmarker = await FaceLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numFaces: 4,
-      outputFaceBlendshapes: true,
-      outputFacialTransformationMatrixes: false,
-    });
-    return landmarker;
+    for (const [wasmBase, modelUrl] of [
+      [WASM_LOCAL, MODEL_LOCAL],
+      [WASM_CDN, MODEL_CDN],
+    ] as const) {
+      try {
+        const fileset = await FilesetResolver.forVisionTasks(wasmBase);
+        landmarker = await FaceLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: modelUrl, delegate: "GPU" },
+          runningMode: "VIDEO",
+          numFaces: 4,
+          outputFaceBlendshapes: true,
+          outputFacialTransformationMatrixes: false,
+        });
+        if (wasmBase !== WASM_LOCAL) {
+          console.warn("[faces] loaded MediaPipe from the CDN; run `npm install` for offline assets");
+        }
+        return landmarker;
+      } catch (err) {
+        if (wasmBase === WASM_LOCAL) {
+          console.warn("[faces] local MediaPipe assets unusable, falling back to the CDN", err);
+        } else {
+          throw err;
+        }
+      }
+    }
+    throw new Error("unreachable");
   })();
   return initPromise;
 }
