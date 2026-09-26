@@ -5,7 +5,10 @@ import type { DetectedFace } from "./faces";
 import type { ConnState } from "./ws-client";
 
 const URGENCY_COLOR: Record<Urgency, string> = {
-  low: "#8aa0b4",
+  // Low was a dim #8aa0b4, which made non-speech events (footsteps, rustling,
+  // anything the classifier is only half-sure of) read as barely-there. The tier
+  // order is still obvious against normal/high/urgent, but every tier is legible.
+  low: "#b9cbdd",
   normal: "#1fd8ff", // was a pale #4fd1ff -- too low-contrast to read at a glance; this + the
   // black text/icon outlines below (not relying on hue alone) is what actually fixes legibility.
   high: "#ffb454",
@@ -166,7 +169,10 @@ function drawEventMarker(
   const age = state.eventAge(ev);
   if (age <= 0) return;
   const color = URGENCY_COLOR[ev.urgency];
-  const baseAlpha = age * clamp(ev.confidence, 0.2, 1);
+  // Confidence modulates opacity but never below 65%: a low-confidence event is
+  // still a real detection, and scaling straight by confidence (as this did) made
+  // anything under ~0.3 — most non-speech — effectively invisible.
+  const baseAlpha = age * clamp(0.65 + 0.35 * ev.confidence, 0.65, 1);
 
   const bearings = ev.ambiguous ? [ev.renderBearing, mirrorBearing(ev.renderBearing)] : [ev.renderBearing];
   bearings.forEach((bearing, i) => {
@@ -189,35 +195,34 @@ function drawUnlocatedList(
   events: TrackedEvent[],
   state: HudState
 ) {
-  const MAX_ROWS = 5;
+  const MAX_ROWS = 8;
   const rows = events.slice(-MAX_ROWS);
   const hidden = events.length - rows.length;
-  const lineH = 20;
+  const lineH = 22;
   const x = size.w - 14;
-  let y = size.h * HORIZON_FRAC - 30;
+  let y = size.h * HORIZON_FRAC - 24;
 
   ctx.save();
-  ctx.font = `bold 13px ${PIXEL_FONT}`;
+  ctx.font = `bold 15px ${PIXEL_FONT}`;
   ctx.textAlign = "right";
   ctx.textBaseline = "alphabetic";
   for (let i = rows.length - 1; i >= 0; i--) {
     const ev = rows[i];
     const age = state.eventAge(ev);
     if (age <= 0) continue;
-    const color = URGENCY_COLOR[ev.urgency];
-    ctx.globalAlpha = age * clamp(ev.confidence, 0.2, 1);
+    ctx.globalAlpha = age * clamp(0.65 + 0.35 * ev.confidence, 0.65, 1);
     outlinedText(
       ctx,
-      `${ev.class} ${Math.round(ev.confidence * 100)}%  no direction`,
+      `${ev.class} ${Math.round(ev.confidence * 100)}%`,
       x,
       y,
-      color
+      URGENCY_COLOR[ev.urgency]
     );
     y -= lineH;
   }
   if (hidden > 0) {
-    ctx.globalAlpha = 0.7;
-    outlinedText(ctx, `+${hidden} more`, x, y, "#9ad");
+    ctx.globalAlpha = 0.85;
+    outlinedText(ctx, `+${hidden} more`, x, y, "#b9cbdd");
   }
   ctx.restore();
 }
