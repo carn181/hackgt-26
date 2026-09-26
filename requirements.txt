@@ -1,0 +1,28 @@
+# Backend dependencies (owner: member B). Python 3.11+.
+# Install:  uv venv .venv && uv pip install -r requirements.txt
+#
+# Pinned below = the versions the model-loading path was verified against. If you unpin and something
+# breaks in the TFLite runtime, put the pin back before debugging anything else.
+
+numpy==2.5.3
+ai-edge-litert==2.2.0
+
+# TFLite runtime transitive deps — pinned because version skew here produces confusing import errors
+ml-dtypes==0.6.0
+flatbuffers==25.12.19
+protobuf==7.36.2
+
+# DSP / IO / service. Unpinned: stable APIs.
+scipy
+soundfile
+fastapi
+uvicorn
+websockets
+pyserial
+
+# Speech-to-text + name spotting (P1)
+faster-whisper
+
+# NOTE: no TensorFlow. The TFLite runtime is the deliberate light path.
+# NOTE: import name differs from package name: `import ai_edge_litert`.
+# NOTE: models/*.tflite is gitignored — fetch it per README §8.1 before running anything.

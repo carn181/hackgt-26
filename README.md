@@ -98,7 +98,7 @@ Three things we must do and say explicitly:
 |---|---|---|
 | TDOA window / YAMNet window | 0.15 s / 0.975 s | — |
 | Decision cadence (hop) | 0.25 s | — |
-| YAMNet inference | < 50 ms | **2.4–2.9 ms** (verified on this laptop) |
+| YAMNet inference | < 50 ms | **2.4–2.9 ms** (reference only — reproduce per §8.2) |
 | Whisper (2–4 s utterance) | 0.3–0.8 s | — |
 | WS + render | < 50 ms | — |
 
@@ -184,6 +184,10 @@ Every message carries `type` and `t` (seconds since backend start, monotonic).
  {"id":2,"ok":false},{"id":3,"ok":true}],
  "calibration":{"baseline_m":0.24,"spacing_m":0.08,"head_yaw_offset_deg":0.0,
  "camera_fov_deg":62.0,"audio_delay_ms":18.0},"transport":"udp"}
+
+{"type":"backend_status","t":0.2,"model":"yamnet","model_path":"models/yamnet.tflite",
+ "model_sha256":"<sha256>","classes":521,"sample_rate":16000,"transport":"udp",
+ "git_rev":"<short sha>"}   // emitted on client connect and every 10 s
 
 {"type":"timeline","t":20.0,"events":[ /* recent sound_event / speech objects */ ]}
 ```
@@ -282,8 +286,9 @@ require a README edit in the same commit; `main` must stay runnable.
 > `server/doa.py` (GCC-PHAT, then SRP-PHAT over a coarse grid), `server/classify.py` (YAMNet),
 > `server/asr.py` (faster-whisper + name spotter), `server/fuse.py`, `server/main.py` (FastAPI + WS on :8000).
 >
-> **Reuse `~/yamnet/`**: `yamnet_live.py` already classifies at 2.4–2.9 ms per 0.975 s window with the TFLite
-> model + class map; copy those two files into `models/` and reuse `classify()`. Do not re-derive loading code.
+> **The classifier is a repo artifact you write, not something that already exists.** Get the model in place
+> first (§8.1) and reproduce the §8.2 checks before writing DSP, so a wrong model file can never be mistaken
+> for bad audio. Nothing outside this repo is a dependency.
 >
 > **Acceptance:**
 > 1. `python -m server.selftest`: synthetic multichannel audio with a source at a known angle → recovered
@@ -359,32 +364,75 @@ and the final merge. Runs the full acceptance test at **04:00 Sunday**, freezes 
 
 ---
 
-## 8. Environment (this laptop: NixOS, Python 3.13, Ryzen 7 PRO 5850U)
+## 8. Models and environment — repo-side setup
 
-### 8.1 Already done and verified
+**Nothing on anyone's personal machine counts as setup.** The model, the loader code, and the venv are repo
+artifacts. A fresh clone plus §8.1 has to be enough to run the backend on any of the four laptops.
 
-- `~/yamnet/`: working YAMNet runner — `./yamnet-live` (live mic TUI), `-f file.wav`, `--jsonl`.
-  Verified: 440 Hz sine → `Sine wave 89 %`; pink noise → `Pink noise`; live speech → `Speech 88–92 %`;
-  **2.4–2.9 ms per 0.975 s window**.
-- NixOS quirk: PyPI wheels need `libstdc++.so.6` and `libz.so.1`, which are not on the default loader path;
-  `~/yamnet/yamnet-live` exports both. Copy that pattern for any new venv.
-
-### 8.2 Model fetch (gitignored)
+### 8.1 Model fetch (do this first, it is a blocking dependency)
 
 ```bash
 mkdir -p models
+# The canonical storage.googleapis.com URL for this model returns 403. This tfhub.dev URL is the one that
+# actually works (verified). Do not "fix" it back to the googleapis one.
 curl -L -o models/yamnet.tflite \
   "https://tfhub.dev/google/lite-model/yamnet/classification/tflite/1?lite-format=tflite"
 curl -L -o models/yamnet_class_map.csv \
   "https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv"
+ls -l models/    # expect 4126810 bytes for the .tflite, 14096 for the CSV
 ```
 
-### 8.3 Environment
+`models/` is gitignored. **If the fetch fails during the hackathon, commit both files instead** (4.1 MB total):
+an unavailable model blocks three of four workstreams, and a binary in git is the cheaper problem.
 
-```bash
-uv venv .venv && . .venv/bin/activate
-uv pip install numpy scipy ai-edge-litert soundfile faster-whisper fastapi uvicorn websockets pyserial
+### 8.2 Model interface contract (frozen — implemented in `server/classify.py`, owner B)
+
+| Item | Value |
+|---|---|
+| Input tensor | `waveform_binary`, shape `(15600,)`, float32 in −1..1 |
+| Sample rate | **16 kHz mono — identical to our capture rate, so nothing resamples anywhere** |
+| Window | 15600 samples = 0.975 s (pad/truncate; never pass a different length) |
+| Output | 521 scores; argmax → `display_name` in `yamnet_class_map.csv` (`class_index` is 0-based row order) |
+| API to expose | `load() -> Model`, `classify(model, samples) -> np.ndarray[521]`, `classes() -> list[str]` |
+| Startup log | model path + sha256 + class count; surfaces in `backend_status` (§4.5) |
+
+**Reproduce these before writing any DSP** — they were verified once, on one machine, not yours:
+
+| Check | Expected |
+|---|---|
+| `ffmpeg -f lavfi -i "sine=frequency=440:duration=3" -ar 16000 -ac 1 sine.wav` → classify | top-1 `Sine wave`, ≈0.89 |
+| white or pink noise (`anoisesrc`) | `Static` / `Noise` / `Pink noise` — **never** `Speech` |
+| any real speech recording | `Speech` > 0.7 |
+| inference time per 0.975 s window | single-digit ms on a modern laptop; record yours in `docs/` |
+
+If a check fails, the model file or the class-map ordering is wrong. Fix that before touching TDOA — otherwise
+you will spend an hour debugging "bad audio" that is actually a bad model file.
+
+### 8.3 Which channel gets classified
+
+Decide once and write it in code:
+- **P0:** the mid-pair average (mics 1+2) — works before DOA exists.
+- **P1:** the delay-and-sum beam steered to the current bearing estimate.
+Never classify a raw 4-channel sum: it reinforces uncorrelated noise across the array and the class flickers.
+
+### 8.4 Dependencies (`requirements.txt`, owner B)
+
 ```
+numpy scipy soundfile ai-edge-litert fastapi uvicorn websockets pyserial faster-whisper
+```
+
+`ffmpeg` optional (test-audio generation only). **No TensorFlow** — the TFLite runtime is the deliberate light
+path, and the import name (`ai_edge_litert`) differs from the package name.
+
+### 8.5 Platform hazards
+
+- **NixOS (this dev laptop):** PyPI wheels need `libstdc++.so.6` and `libz.so.1`, neither on the default
+  loader path. Symptom: `OSError: libstdc++.so.6: cannot open shared object file`. Fix by exporting those two
+  store paths into `LD_LIBRARY_PATH` when invoking the venv python — **and wrap it in a repo script** so the
+  next person does not rediscover it.
+- macOS/Windows/Linux teammates: a plain `uv venv` + `uv pip install -r requirements.txt` is sufficient; the
+  only real check is `import ai_edge_litert` succeeding.
+- Verify the venv actually imports before claiming setup: `python -c "import ai_edge_litert, numpy; print('ok')"`.
 
 ---
 
@@ -450,3 +498,4 @@ Cut order when behind: Quest → elevation → printed parts → bubbles (keep t
 | Overload: the HUD becomes noise | Urgency tiers + `set_mode`, both in P1 |
 | Camera needs HTTPS; iOS has no WebXR | localhost/self-signed cert; demo on Android Chrome or desktop |
 | Four people editing one interface | §4 frozen; contract changes = README edit in the same commit |
+| Assuming a model/venv/env "already exists" on some machine | Model file, loader code and venv are **repo artifacts** (§8). Nothing outside this repo is a dependency, and nothing on a personal machine counts as setup. |
