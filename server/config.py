@@ -65,6 +65,7 @@ class Profile:
     front_back_heuristic: bool
     highpass_hz: float = 120.0
     lowpass_hz: float = 6000.0
+    analysis_channels: tuple[int, ...] | None = None
     device: str | None = None
     audio_delay_ms: float | None = None
     notes: tuple[str, ...] = ()
@@ -206,6 +207,9 @@ def _profile_from_file(path: Path, calib_path: Path | None = None) -> Profile:
         front_back_heuristic=bool(prof.get("front_back_heuristic", False)),
         highpass_hz=_num(prof.get("highpass_hz")) or 120.0,
         lowpass_hz=_num(prof.get("lowpass_hz")) or 6000.0,
+        analysis_channels=(
+            tuple(int(m) for m in prof["analysis_channels"]) if prof.get("analysis_channels") else None
+        ),
         device=prof.get("device"),
         audio_delay_ms=_num(prof.get("audio_delay_ms")),
         notes=tuple(prof.get("_notes", ())),

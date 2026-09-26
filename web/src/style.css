@@ -224,6 +224,7 @@ body {
 
 #modes button,
 #cam-start,
+#mic-toggle,
 #camera-retry {
   min-height: var(--tap);
   min-width: var(--tap);
@@ -253,9 +254,21 @@ body {
 }
 
 #cam-start,
+#mic-toggle,
 #camera-retry {
   border-color: var(--cyan);
   color: var(--cyan);
+}
+
+#mic-toggle[aria-pressed='true'] {
+  background: var(--cyan);
+  border-color: var(--cyan);
+  color: #02121a;
+}
+
+#mic-toggle[data-state='error'] {
+  border-color: var(--amber, #f0b429);
+  color: var(--amber, #f0b429);
 }
 
 #cam-start[hidden] {

@@ -280,21 +280,67 @@ window.addEventListener('pagehide', () => {
 ws.connect()
 hud.setVision(vision.status.state, vision.faces)
 
-// §4.6 `audio`: `?mic=1` makes this browser the backend's microphone. The phone
-// is a better sensor than the laptop's DMIC pair and is not attached to the
-// chassis, so a clap arrives as airborne sound (see web/src/mic.ts).
+// ---------------------------------------------------------------------------
+// Microphone (§4.6 `audio`) — ON by default
+// ---------------------------------------------------------------------------
+// The backend's default source is the HUD's own microphone, so a phone or a Mac
+// becomes the sensor just by opening this page: the laptop's DMIC pair is a poor
+// array (channel 1 carries a 36%-of-full-scale DC offset and a sub-100 Hz rumble
+// 31 dB above channel 0's), and a phone is not attached to the chassis, so a clap
+// reaches it as airborne sound rather than a structural thump.
+//
+// `?mic=0` turns it off, `?mic=1` forces it on (the default). getUserMedia needs a
+// secure context and, on iOS, a gesture — hence the button.
+const micButton = document.querySelector<HTMLButtonElement>('#mic-toggle')!
 const mic = new MicStream()
-const micWanted = params.get('mic') === '1'
-mic.onStatus = (status) => {
-  if (status.state === 'error') console.warn('mic:', status.lastError)
-  else console.info(`mic: ${status.state}${status.sampleRate ? ` @ ${status.sampleRate} Hz` : ''} (${status.frames} frames, ${status.seconds.toFixed(1)}s sent)`)
+const micWanted = params.get('mic') !== '0'
+
+function paintMicButton(): void {
+  const s = mic.status
+  micButton.setAttribute('aria-pressed', s.state === 'running' ? 'true' : 'false')
+  micButton.dataset.state = s.state
+  micButton.textContent =
+    s.state === 'running'
+      ? `MIC ON · ${s.seconds.toFixed(0)}s`
+      : s.state === 'starting'
+        ? 'MIC STARTING…'
+        : s.state === 'error'
+          ? 'MIC — TAP TO RETRY'
+          : 'MICROPHONE'
 }
+
+mic.onStatus = (status) => {
+  paintMicButton()
+  if (status.state === 'error') {
+    lastDiagnostic = `microphone: ${status.lastError}`
+    console.warn('mic:', status.lastError)
+  } else if (status.state === 'running') {
+    lastDiagnostic = `microphone streaming at ${status.sampleRate} Hz (${status.seconds.toFixed(1)}s sent)`
+    console.info(`mic: running @ ${status.sampleRate} Hz, ${status.frames} frames`)
+  }
+  paintNotice()
+}
+
+function startMic(): void {
+  void mic.start((base64, seq, rate, channels) => ws.audio(base64, seq, rate, channels))
+}
+
+micButton.addEventListener('click', () => {
+  if (mic.status.state === 'running') {
+    mic.stop()
+    paintMicButton()
+    return
+  }
+  startMic()
+})
+paintMicButton()
+
 if (micWanted) {
+  // Start as soon as the socket can carry the frames; on a browser that refuses
+  // without a gesture the button above is the retry path.
   ws.onStatus = ((previous) => (status: Parameters<NonNullable<typeof ws.onStatus>>[0]) => {
     previous(status)
-    if (status.state === 'open' && mic.status.state !== 'running' && mic.status.state !== 'starting') {
-      void mic.start((base64, seq, rate, channels) => ws.audio(base64, seq, rate, channels))
-    }
+    if (status.state === 'open' && mic.status.state === 'off') startMic()
   })(ws.onStatus)
 }
 

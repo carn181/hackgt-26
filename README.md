@@ -443,10 +443,10 @@ tools/run_backend.sh --no-asr --print-events           # no Whisper; one line pe
 
 | Situation | Command |
 |---|---|
-| Laptop stand-in array (this laptop's DMIC pair) | `--profile laptop_dmic` |
-| **The HUD's mic, e.g. your phone** | `--profile browser_mono --source browser` + open the HUD with `?mic=1` |
+| **The HUD's own mic (default for the demo)** | `--profile browser_mono --source browser` — just open the site, the page streams its mic |
 | The hat (4 mics, `config/array.json` + measured `calib.json`) | `--profile hat` |
-| Auto-detect: listen on UDP :7000, fall back to the local mic after 2 s | `--source auto` (default) |
+| This laptop's DMIC pair (stand-in array, no baseline) | `--profile laptop_dmic --source pw` |
+| Auto-detect: listen on UDP :7000, fall back to the local mic after 2 s | `--source auto` |
 | Latency, on a real sound played from the speakers | `.venv/bin/python tools/latency_bench.py --inject-side flip` |
 | Sign-flip test (A10) on any array, no ESP32 needed | the same command — it prints `sign flip: OK/MISMATCH` |
 | Why a clap reads as a fart | `.venv/bin/python tools/clap_lab.py --shots 5` (clap when prompted) |
@@ -454,17 +454,27 @@ tools/run_backend.sh --no-asr --print-events           # no Whisper; one line pe
 | Verify the pipeline with no microphone at all | `.venv/bin/python -m server.selftest` |
 | Watch §4.2 packets (the tool A5 needs) | `.venv/bin/python tools/udp_sniff.py --selftest` |
 
-**Phone as the microphone** (the camera needs HTTPS, and so does `getUserMedia`):
+**The microphone is the website's, by default.** The HUD streams its own mic as §4.6 `audio`
+frames; `?mic=0` turns it off, the **MICROPHONE** button toggles it and shows `MIC ON · Ns`.
+This exists because the laptop's DMIC pair is a poor array: its two capsules are equally clean
+in-band but channel 1 carries a 36%-of-full-scale DC offset and a sub-100 Hz rumble 31 dB above
+channel 0's, and the pair has no inter-channel baseline. A phone has neither problem and is not
+attached to the chassis, so a clap reaches it as airborne sound rather than a structural thump.
 
 ```bash
+# laptop-only check (localhost is a secure context, nothing else needed)
 tools/run_backend.sh --profile browser_mono --source browser   # terminal 1
-cd web && npm run phone                                        # terminal 2, prints https://<lan-ip>:5173/
-# then on the phone: https://<lan-ip>:5173/?mic=1   (add START CAMERA for bearings)
+cd web && npm run dev                                          # terminal 2 → http://localhost:5173/
+
+# phone (needs HTTPS, because getUserMedia does)
+cd web && PORT=5174 npm run phone      # prints https://<lan-ip>:5174/ and serves a cert
 ```
-The phone streams its own mic to the backend over the socket, so the laptop's DMIC pair is out of
-the loop entirely — which is also the quickest answer to "why does a clap read as a fart": the
-phone is not attached to the chassis, so the clap arrives as airborne sound instead of a structural
-thump. `window.__hud.mic()` reports frames sent and the graph's real sample rate.
+For the phone, install `web/.certs/caroot/rootCA.pem` once as a trusted certificate — with a
+self-signed cert the phone browser treats the page as insecure and **blocks the microphone and
+camera**. Android: Settings → Security → Encryption & credentials → Install a certificate → CA
+certificate. macOS: Keychain Access → import → "Always Trust". Without that, the fallback is
+`http://<lan-ip>:5173/` plus Chrome's `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
+entry for that origin.
 
 - **`--fit-spacing write`** (default) measures the array's effective spacing against the camera while
   someone talks, and persists it into `server/profiles/<name>.json`. `config/calib.json` stays owner D's.

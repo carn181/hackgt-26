@@ -31,14 +31,35 @@ def analysis_pair(prof: Profile) -> tuple[int, int]:
     return i, j
 
 
-def analysis_channel(x: np.ndarray, prof: Profile) -> np.ndarray:
-    """P0: mean of the widest pair. One channel in, one channel out."""
+def analysis_channels(prof: Profile) -> tuple[int, ...]:
+    """Which device channels the classifier and transcriber should hear.
+
+    A profile may name them explicitly (`analysis_channels` in the JSON, as *mic
+    ids*). The laptop stand-in needs it: its two capsules are equally clean
+    in-band (−57 dB) but channel 1 carries a 36%-of-full-scale DC offset and a
+    sub-100 Hz rumble 31 dB louder than channel 0's, so averaging the pair feeds
+    that rumble to YAMNet and to every level meter. Naming one channel is the
+    difference between "the mic is weird" and a clean signal.
+    """
+    if prof.analysis_channels:
+        return tuple(prof.channels[m] for m in prof.analysis_channels if 0 <= m < len(prof.channels))
     i, j = analysis_pair(prof)
-    if i == j:
-        return x[i].astype(np.float32, copy=True)
-    # Mean, not sum: a sum would scale the level with the channel count and
-    # shift the absolute dB thresholds in the onset detector.
-    return ((x[i].astype(np.float32) + x[j].astype(np.float32)) * 0.5)
+    return (i,) if i == j else (i, j)
+
+
+def analysis_channel(x: np.ndarray, prof: Profile) -> np.ndarray:
+    """P0: mean of the profile's analysis channels. One channel in, one out.
+
+    Mean, not sum: a sum would scale the level with the channel count and shift
+    the absolute dB thresholds in the onset detector.
+    """
+    chans = analysis_channels(prof)
+    if len(chans) == 1:
+        return x[chans[0]].astype(np.float32, copy=True)
+    acc = x[chans[0]].astype(np.float32)
+    for ch in chans[1:]:
+        acc = acc + x[ch].astype(np.float32)
+    return acc * (1.0 / len(chans))
 
 
 def _fractional_shift(x: np.ndarray, samples: float) -> np.ndarray:
