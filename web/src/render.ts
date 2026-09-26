@@ -6,11 +6,13 @@ import type { ConnState } from "./ws-client";
 
 const URGENCY_COLOR: Record<Urgency, string> = {
   low: "#8aa0b4",
-  normal: "#4fd1ff",
+  normal: "#1fd8ff", // was a pale #4fd1ff -- too low-contrast to read at a glance; this + the
+  // black text/icon outlines below (not relying on hue alone) is what actually fixes legibility.
   high: "#ffb454",
   urgent: "#ff3b3b",
 };
 
+const PIXEL_FONT = '"Pixelify Sans", "Courier New", monospace';
 const HORIZON_FRAC = 0.45; // vertical position for in-frame markers
 const COMPASS_Y_FRAC = 0.93;
 const COMPASS_HEIGHT = 34;
@@ -66,6 +68,74 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasEle
   drawDebugPanel(ctx, opts);
 }
 
+/**
+ * Outlined text: a black backing stroke plus a colored fill on top, so every
+ * label stays legible over any patch of video without depending on hue
+ * contrast alone (a light, saturated urgency color can still wash out
+ * against a bright background otherwise).
+ */
+function outlinedText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  fillColor: string,
+  lineWidth = 3
+) {
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+  ctx.lineWidth = lineWidth;
+  ctx.strokeStyle = "#000";
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = fillColor;
+  ctx.fillText(text, x, y);
+}
+
+/**
+ * A single triangular arrow glyph, black-backed for contrast, used for both
+ * in-frame direction markers (pointing down at the bearing) and off-FOV edge
+ * indicators (pointing left/right) -- one shared "arrow style" per the
+ * Minecraft-sound-mod reference instead of a circle-plus-chevron mix.
+ */
+function drawArrow(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  angleRad: number,
+  size: number,
+  color: string,
+  hollow = false
+) {
+  const path = (scale: number) => {
+    ctx.beginPath();
+    ctx.moveTo(size * 0.6 * scale, 0);
+    ctx.lineTo(-size * 0.4 * scale, -size * 0.5 * scale);
+    ctx.lineTo(-size * 0.4 * scale, size * 0.5 * scale);
+    ctx.closePath();
+  };
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angleRad);
+  if (hollow) {
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#000";
+    path(1);
+    ctx.stroke();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = color;
+    path(1);
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = "#000";
+    path(1.3);
+    ctx.fill();
+    ctx.fillStyle = color;
+    path(1);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawEventMarker(
   ctx: CanvasRenderingContext2D,
   size: Size,
@@ -104,48 +174,42 @@ function drawOneMarker(
   const edgeY = y + edgeOffsetY;
   const label = `${ev.class} ${Math.round(ev.confidence * 100)}%  ±${Math.round(ev.accuracy_deg)}°`;
   const pulse = ev.urgency === "urgent" ? 1 + 0.15 * Math.sin(performance.now() / 120) : 1;
-  const radius = 10 * pulse;
+  const arrowSize = 22 * pulse;
 
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
-  ctx.lineWidth = ambiguous ? 1.5 : 2;
-  if (ambiguous) ctx.setLineDash([4, 4]);
+  ctx.font = `bold 13px ${PIXEL_FONT}`;
 
   if (xNorm === null) {
-    // Off-FOV: draw a chevron at the correct screen edge instead of clamping.
+    // Off-FOV: point an arrow at the correct screen edge instead of clamping.
     const normBearing = normalizeDeg(bearingDeg - calib.head_yaw_offset_deg);
     const atRightEdge = normBearing > 0;
-    drawChevron(ctx, atRightEdge ? size.w - 18 : 18, edgeY, atRightEdge, color);
-    ctx.font = "12px monospace";
+    const arrowX = atRightEdge ? size.w - 20 : 20;
+    drawArrow(ctx, arrowX, edgeY, atRightEdge ? 0 : Math.PI, arrowSize, color, ambiguous);
+    if (ambiguous) drawDashedRing(ctx, arrowX, edgeY, arrowSize * 0.9, color);
     ctx.textAlign = atRightEdge ? "right" : "left";
-    ctx.fillText(label, atRightEdge ? size.w - 26 : 26, edgeY - 16);
+    ctx.textBaseline = "alphabetic";
+    outlinedText(ctx, label, atRightEdge ? size.w - 34 : 34, edgeY - 20, color);
   } else {
     const x = xNorm * size.w;
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.font = "12px monospace";
+    drawArrow(ctx, x, y, Math.PI / 2, arrowSize, color, ambiguous);
+    if (ambiguous) drawDashedRing(ctx, x, y, arrowSize * 0.9, color);
     ctx.textAlign = "center";
-    ctx.fillText(label, x, y - radius - 6);
+    ctx.textBaseline = "alphabetic";
+    outlinedText(ctx, label, x, y - arrowSize - 8, color);
   }
   ctx.restore();
 }
 
-function drawChevron(ctx: CanvasRenderingContext2D, x: number, y: number, pointRight: boolean, color: string) {
+/** Subtle dashed ring marking a bearing as one of two ambiguous candidates. */
+function drawDashedRing(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, color: string) {
   ctx.save();
-  ctx.fillStyle = color;
+  ctx.setLineDash([4, 4]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = color;
   ctx.beginPath();
-  const dir = pointRight ? 1 : -1;
-  ctx.moveTo(x + dir * 10, y);
-  ctx.lineTo(x - dir * 6, y - 10);
-  ctx.lineTo(x - dir * 6, y + 10);
-  ctx.closePath();
-  ctx.fill();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -171,12 +235,12 @@ function drawSpeechBubble(
   if (age <= 0) return;
   const xNorm = bearingToScreenX(bearingDeg, calib);
   const px = anchor ? anchor.face.centerXNorm * size.w : xNorm !== null ? xNorm * size.w : null;
-  if (px === null) return; // off-frame speech with no face: skip bubble, marker chevron already shown
+  if (px === null) return; // off-frame speech with no face: skip bubble, marker arrow already shown
   const py = anchor ? anchor.face.bboxNorm.y * size.h - 14 : size.h * HORIZON_FRAC - 40;
 
   ctx.save();
   ctx.globalAlpha = age;
-  ctx.font = "13px sans-serif";
+  ctx.font = `13px ${PIXEL_FONT}`;
   const noFace = !anchor;
   const padding = 8;
   const metrics = ctx.measureText(text);
@@ -186,22 +250,21 @@ function drawSpeechBubble(
   const y = Math.max(4, py - h);
 
   ctx.fillStyle = noFace ? "rgba(60,20,20,0.85)" : "rgba(20,30,40,0.85)";
-  ctx.strokeStyle = noFace ? "#ff8a8a" : "#4fd1ff";
+  ctx.strokeStyle = noFace ? "#ff8a8a" : URGENCY_COLOR.normal;
   ctx.lineWidth = 1.5;
   if (noFace) ctx.setLineDash([3, 3]);
   roundRect(ctx, x, y, w, h, 6);
   ctx.fill();
   ctx.stroke();
 
-  ctx.fillStyle = "#fff";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.fillText(text, x + padding, y + h / 2);
+  outlinedText(ctx, text, x + padding, y + h / 2, "#fff", 2.5);
 
   if (noFace) {
-    ctx.font = "10px monospace";
-    ctx.fillStyle = "#ff8a8a";
-    ctx.fillText("no face — playback?", x, y - 4);
+    ctx.font = `10px ${PIXEL_FONT}`;
+    ctx.textBaseline = "alphabetic";
+    outlinedText(ctx, "no face — playback?", x, y - 4, "#ff8a8a", 2);
   }
   ctx.restore();
 }
@@ -235,9 +298,9 @@ function drawCompass(ctx: CanvasRenderingContext2D, size: Size, events: TrackedE
   ctx.fillRect(0, y - COMPASS_HEIGHT / 2, size.w, COMPASS_HEIGHT);
 
   ctx.strokeStyle = "rgba(255,255,255,0.5)";
-  ctx.fillStyle = "rgba(255,255,255,0.8)";
-  ctx.font = "10px monospace";
+  ctx.font = `10px ${PIXEL_FONT}`;
   ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
   for (let deg = -180; deg <= 180; deg += 30) {
     const x = 0.5 * (1 + deg / 180) * size.w;
     const withinFov = Math.abs(deg) <= halfFov;
@@ -246,19 +309,13 @@ function drawCompass(ctx: CanvasRenderingContext2D, size: Size, events: TrackedE
     ctx.moveTo(x, y - 6);
     ctx.lineTo(x, y + 6);
     ctx.stroke();
-    ctx.fillText(`${deg}°`, x, y + 18);
+    outlinedText(ctx, `${deg}°`, x, y + 18, "#fff", 2.5);
   }
   ctx.globalAlpha = 1;
 
   // Nose marker (0 deg, hat frame, before yaw offset applied to compass mapping below).
   const noseX = 0.5 * (1 - calib.head_yaw_offset_deg / 180) * size.w;
-  ctx.fillStyle = "#4fd1ff";
-  ctx.beginPath();
-  ctx.moveTo(noseX, y - COMPASS_HEIGHT / 2 - 2);
-  ctx.lineTo(noseX - 5, y - COMPASS_HEIGHT / 2 - 10);
-  ctx.lineTo(noseX + 5, y - COMPASS_HEIGHT / 2 - 10);
-  ctx.closePath();
-  ctx.fill();
+  drawArrow(ctx, noseX, y - COMPASS_HEIGHT / 2 - 8, -Math.PI / 2, 14, URGENCY_COLOR.normal);
 
   // Event ticks on the full-range strip (this is what makes off-screen events legible).
   for (const ev of events) {
@@ -266,6 +323,10 @@ function drawCompass(ctx: CanvasRenderingContext2D, size: Size, events: TrackedE
     const bearings = ev.ambiguous ? [ev.renderBearing, mirrorBearing(ev.renderBearing)] : [ev.renderBearing];
     for (const b of bearings) {
       const x = 0.5 * (1 + normalizeDeg(b) / 180) * size.w;
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.arc(x, y, 5.5, 0, Math.PI * 2);
+      ctx.fill();
       ctx.fillStyle = URGENCY_COLOR[ev.urgency];
       ctx.beginPath();
       ctx.arc(x, y, 4, 0, Math.PI * 2);
@@ -296,7 +357,9 @@ function drawDebugPanel(ctx: CanvasRenderingContext2D, opts: RenderOptions) {
   }
 
   ctx.save();
-  ctx.font = "11px monospace";
+  ctx.font = `11px ${PIXEL_FONT}`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
   const pad = 6;
   const lineH = 14;
   const top = 40; // clear of the HTML error banner, which overlays the canvas at y=0
@@ -304,8 +367,7 @@ function drawDebugPanel(ctx: CanvasRenderingContext2D, opts: RenderOptions) {
   const h = lines.length * lineH + pad * 2;
   ctx.fillStyle = "rgba(0,0,0,0.5)";
   ctx.fillRect(8, top, w, h);
-  ctx.fillStyle = "#dfffe0";
-  lines.forEach((l, i) => ctx.fillText(l, 8 + pad, top + pad + lineH * (i + 1) - 3));
+  lines.forEach((l, i) => outlinedText(ctx, l, 8 + pad, top + pad + lineH * (i + 1) - 3, "#dfffe0", 2));
   ctx.restore();
 }
 

@@ -3,6 +3,34 @@
 Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
 ticks go in README §0 with the owner+time protocol.
 
+## 2026-09-26 — real camera + face detection, live over Tailscale
+
+Tested via a phone browser over a Tailscale HTTPS tunnel to the dev laptop
+(`vite.config.ts` proxies `/ws` and allows `.ts.net` hosts; `ws-client.ts`
+defaults to same-origin `ws`/`wss` instead of hardcoded `127.0.0.1`).
+Confirmed live: camera opens, MediaPipe face box tracks a real face, WS
+connects through the tunnel (`ws: open  rtt 11ms`). Real evidence toward
+**C1**. Clapping in front of the camera doesn't move any marker yet — expected,
+since there's no real backend/DOA yet; the mock stream's bearings are scripted,
+not derived from audio, so **C3** genuinely needs `server/doa.py` before it can
+be evidenced (not a frontend bug).
+
+## 2026-09-26 — design pass: pixel font, arrow markers, contrast fix
+
+Per human request after seeing it live: switched all HUD text to Pixelify Sans
+(Google Fonts; visually close to Minecraft's font, applied via CSS `@font-face`
+link + `ctx.font`) instead of plain monospace/sans-serif. Replaced the
+circle-marker + separate-chevron pair with one shared arrow glyph
+(`drawArrow` in `src/render.ts`) used for both in-frame markers (pointing down
+at the bearing) and off-FOV edges (pointing left/right) — matches the
+reference "Minecraft sound mod" `<`/`>` convention. `ambiguous:true`
+candidates now render as a hollow arrow + dashed ring instead of a dashed
+stroke on a filled circle. Every label (markers, compass ticks, debug panel,
+speech bubbles) now draws with a black outline behind the fill
+(`outlinedText` helper) so text stays legible over any video background
+regardless of hue; also bumped the "normal" urgency color from `#4fd1ff`
+(reported as too pale to catch) to a more saturated `#1fd8ff`.
+
 ## 2026-09-26 — initial scaffold + mock stream (C2)
 
 **Command:**

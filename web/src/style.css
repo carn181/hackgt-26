@@ -40,8 +40,9 @@ html, body {
   right: 0;
   padding: 10px;
   text-align: center;
-  font: 600 14px system-ui, sans-serif;
+  font: 600 14px "Pixelify Sans", monospace;
   color: #fff;
+  text-shadow: 0 0 3px #000, 0 0 3px #000;
   background: #b23b3b;
   z-index: 10;
 }
@@ -60,17 +61,19 @@ html, body {
 }
 
 .mode-btn {
-  font: 12px monospace;
+  font: 13px "Pixelify Sans", monospace;
   padding: 6px 10px;
   border-radius: 4px;
   border: 1px solid rgba(255, 255, 255, 0.4);
   background: rgba(0, 0, 0, 0.5);
   color: #fff;
+  text-shadow: 0 0 2px #000;
   cursor: pointer;
 }
 
 .mode-btn.active {
-  background: #4fd1ff;
+  background: #1fd8ff;
   color: #002;
-  border-color: #4fd1ff;
+  text-shadow: none;
+  border-color: #1fd8ff;
 }
