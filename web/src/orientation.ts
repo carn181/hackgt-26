@@ -18,10 +18,11 @@ import { normalizeDeg } from "./calib";
 // Per the W3C spec, increasing `alpha` is a *counter-clockwise* turn viewed
 // from above the device, but on-device behavior (especially iOS's
 // webkitCompassHeading, which runs the opposite direction from alpha) is the
-// one thing in this file that cannot be verified without a real phone. If
-// the compass nose-marker / markers pan the wrong way on first test, flip
-// this to -1 -- that is the only line that should need to change.
-const ROTATION_SIGN = 1;
+// one thing in this file that couldn't be verified without a real phone.
+// Confirmed backwards on first real-device test (turning left produced a
+// positive delta; markers need the opposite to pan the correct direction) --
+// flipped, as flagged as the one line that should need it.
+const ROTATION_SIGN = -1;
 
 const SMOOTHING = 0.25; // higher = more responsive, lower = steadier; EMA weight per sample
 

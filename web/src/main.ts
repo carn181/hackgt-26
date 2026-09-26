@@ -23,6 +23,7 @@ const ctx = canvas.getContext("2d")!;
 
 const state = new HudState();
 let calib: Calibration = { ...DEFAULT_CALIB };
+let haveArrayStatus = false;
 let wsState: ConnState = "connecting";
 let rttMs: number | null = null;
 let facesReady = false;
@@ -71,14 +72,21 @@ const ws = new WsClient({
       case "speech":
         state.ingestSpeech(msg, nowS);
         break;
-      case "array_status":
+      case "array_status": {
         state.ingestArrayStatus(msg);
+        // The backend re-sends this every ~2s regardless of whether
+        // anything changed (ARRAY_PERIOD_S in server/main.py) -- resetting
+        // the orientation reference on every single one of those wiped out
+        // an in-progress turn every couple of seconds, not just on an
+        // actual new calibration. Only re-anchor when the value itself
+        // actually moved (a genuine recalibration), or on the very first
+        // one (there's nothing to preserve yet).
+        const yawChanged = calib.head_yaw_offset_deg !== msg.calibration.head_yaw_offset_deg;
         calib = { ...msg.calibration };
-        // This is the last known-good head_yaw_offset_deg; the orientation
-        // tracker should only contribute rotation *since* this moment, not
-        // fight with whatever it accumulated before it.
-        orientation.resetReference();
+        if (yawChanged || !haveArrayStatus) orientation.resetReference();
+        haveArrayStatus = true;
         break;
+      }
       case "backend_status":
         state.ingestBackendStatus(msg);
         break;
