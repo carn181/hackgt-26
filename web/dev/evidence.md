@@ -3,6 +3,36 @@
 Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
 ticks go in README §0 with the owner+time protocol.
 
+## 2026-09-26 — multi-speaker mock test + WS message hardening
+
+Added a second, simultaneous off-FOV speaker to `web/dev/mock-ws.mjs`'s
+demo loop (bearing -60, overlapping the existing bearing-10 speaker's
+lifetime). Confirmed both events render independently -- neither replaces
+or hides the other, and the "directional" vs "anchored/maybe-playback"
+bubble styles both render correctly at the same time. Did find a real, if
+minor, issue: when two *different* events' class/confidence labels land
+close together in screen space (here: the earlier "playback" event fading
+out near the new one's edge arrow), their text can visually overlap --
+there's no cross-event collision layout, each marker draws independently.
+Not fixing now (would need a real layout pass, out of scope for this
+pass) but flagging it since it'll get worse with more simultaneous real
+sound sources.
+
+Added `src/validate.ts`: a small no-schema-library guard now sitting in
+front of `ws-client.ts`'s message dispatch. Rejects a message outright
+only when a field its own downstream handler actually dereferences is
+missing/wrong-typed (e.g. a `sound_event` with no `bearing_deg`); defaults
+everything else so a slightly-off message still renders instead of
+vanishing. `main.ts`'s `timeline` handler now re-validates each entry in
+its `events` array too, since the top-level check only confirms it's an
+array. Verified live: temporarily sent a `sound_event` missing
+`bearing_deg` (dropped, logged, no crash) and a `backend_status` missing
+`model_sha256` (defaulted to `"unknown"`, rendered fine -- this one would
+have thrown inside `render.ts`'s `bs.model_sha256.slice(0, 8)` pre-fix,
+a real crash risk against B's early backend bugs). Reverted the temporary
+malformed sends afterward; `git diff` confirmed only the permanent
+dual-speaker addition remains in `mock-ws.mjs`.
+
 ## 2026-09-26 — attempted: face detection in a Web Worker (reverted)
 
 Tried moving `FaceLandmarker` off the main thread (`vision.worker.ts` +

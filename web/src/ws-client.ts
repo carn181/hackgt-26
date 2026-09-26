@@ -1,4 +1,5 @@
 import type { BackendMsg, FrontendMsg } from "./types";
+import { validateBackendMsg } from "./validate";
 
 export type ConnState = "connecting" | "open" | "closed";
 
@@ -56,12 +57,23 @@ export class WsClient {
     };
 
     ws.onmessage = (ev) => {
-      let msg: BackendMsg;
+      let raw: unknown;
       try {
-        msg = JSON.parse(ev.data);
+        raw = JSON.parse(ev.data);
       } catch {
+        console.warn("[ws] dropped non-JSON message", ev.data);
         return;
       }
+      const validated = validateBackendMsg(raw);
+      if (!validated) {
+        console.warn("[ws] dropped malformed message (missing/wrong-type field)", raw);
+        return;
+      }
+      if (validated.warnings.length) {
+        console.warn("[ws] message had issues, defaulted:", validated.warnings, raw);
+      }
+      const msg = validated.msg;
+
       if ((msg as any).type === "pong" && this.opts.onRttSample) {
         const echoed = (msg as any).t_echo;
         const sentAt = this.pendingPings.get(echoed);

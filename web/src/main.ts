@@ -5,6 +5,7 @@ import { DEFAULT_CALIB, effectiveFovDeg, screenXToBearingDeg, normalizeDeg } fro
 import { detectFaces, initFaceLandmarker, type DetectedFace } from "./faces";
 import { drawOverlay, type FaceAnchor } from "./render";
 import type { BackendMsg, Calibration, Mode } from "./types";
+import { validateBackendMsg } from "./validate";
 
 const video = document.getElementById("cam") as HTMLVideoElement;
 const canvas = document.getElementById("overlay") as HTMLCanvasElement;
@@ -70,8 +71,16 @@ const ws = new WsClient({
         break;
       case "timeline":
         for (const ev of msg.events) {
-          if (ev.type === "sound_event") state.ingestSoundEvent(ev, nowS);
-          else if (ev.type === "speech") state.ingestSpeech(ev, nowS);
+          // Each array element only gets the top-level `events` array itself
+          // checked by validateBackendMsg, not each entry -- re-validate here
+          // so one bad replay entry can't crash the render loop.
+          const validated = validateBackendMsg(ev);
+          if (!validated) {
+            console.warn("[ws] dropped malformed timeline entry", ev);
+            continue;
+          }
+          if (validated.msg.type === "sound_event") state.ingestSoundEvent(validated.msg, nowS);
+          else if (validated.msg.type === "speech") state.ingestSpeech(validated.msg, nowS);
         }
         break;
       case "presence":

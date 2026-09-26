@@ -132,6 +132,38 @@ wss.on("connection", (ws) => {
       );
     });
 
+    // 2b. A second, simultaneous speaker off to the side (off-FOV) -- tests
+    // that two live speech bubbles at once don't collide, and that this one
+    // correctly renders in the "directional" (docked-to-edge-arrow) style
+    // while 2's is anchored/in-frame at the same time.
+    schedule(3_300, () => {
+      const evId = nextId("speech2_ev");
+      send({
+        type: "sound_event",
+        id: evId,
+        class: "Speech",
+        confidence: 0.84,
+        bearing_deg: -60,
+        elevation_deg: null,
+        accuracy_deg: 14,
+        ambiguous: false,
+        urgency: "normal",
+        source: "array",
+      });
+      schedule(500, () =>
+        send({
+          type: "speech",
+          id: nextId("speech2_txt"),
+          parent_event: evId,
+          bearing_deg: -60,
+          text: "over here too",
+          partial: false,
+          confidence: 0.72,
+          lang: "en",
+        })
+      );
+    });
+
     // 3. "Playback" speech: off to a side where no face is expected -> no anchor.
     schedule(6_000, () => {
       const evId = nextId("playback_ev");
