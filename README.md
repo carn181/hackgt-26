@@ -606,6 +606,12 @@ artifacts. A fresh clone plus §8.1 has to be enough to run the backend on any o
 mkdir -p models
 # The canonical storage.googleapis.com URL for this model returns 403. This tfhub.dev URL is the one that
 # actually works (verified). Do not "fix" it back to the googleapis one.
+#
+# UPDATE (owner B, 2026-09-26 16:40): this tfhub.dev URL now returns **404** as well (checked with
+# `curl -sIL`), so a fresh clone cannot fetch the model at all. Per the paragraph below, the model is
+# therefore **committed to this repo** (force-added past the `models/` gitignore rule) — a fresh clone
+# plus `uv pip install -r requirements.txt` is enough to run the backend. The class map still fetches
+# fine from the raw.githubusercontent URL.
 curl -L -o models/yamnet.tflite \
   "https://tfhub.dev/google/lite-model/yamnet/classification/tflite/1?lite-format=tflite"
 curl -L -o models/yamnet_class_map.csv \
@@ -613,7 +619,8 @@ curl -L -o models/yamnet_class_map.csv \
 ls -l models/    # expect 4126810 bytes for the .tflite, 14096 for the CSV
 ```
 
-`models/` is gitignored. **If the fetch fails during the hackathon, commit both files instead** (4.1 MB total):
+`models/` is gitignored, **except the two files themselves, which are committed** (see the update in
+§8.1 — both documented URLs are dead now). If you re-add them, commit both (4.1 MB total):
 an unavailable model blocks three of four workstreams, and a binary in git is the cheaper problem.
 
 ### 8.2 Model interface contract (frozen — implemented in `server/classify.py`, owner B)
