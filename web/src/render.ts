@@ -471,7 +471,7 @@ function drawFaces(
       ctx.fill();
     }
 
-    const label = `#${f.trackId} open:${f.mouthOpenScore.toFixed(2)} swing:${f.mouthActivity.toFixed(2)}${isLocked ? " SPEAKING" : ""}`;
+    const label = `#${f.trackId} open:${f.mouthOpenScore.toFixed(2)} rev:${f.mouthActivity}${isLocked ? " SPEAKING" : ""}`;
     outlinedText(ctx, label, x, y - 4, isLocked ? URGENCY_COLOR.normal : "#fff", 2);
   }
   ctx.restore();

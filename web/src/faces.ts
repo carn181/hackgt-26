@@ -16,12 +16,20 @@ const MOUTH_OPEN_THRESHOLD = 0.3;
 // A held-open mouth (smiling, yawning, resting open) and an actually-talking
 // mouth both cross MOUTH_OPEN_THRESHOLD; only the second one is *moving*.
 // Two real speakers side by side made this visible: the bubble kept landing
-// on whoever's mouth happened to be open, not whoever was talking. Track a
-// short per-face history of the raw jawOpen score and call it "active" only
-// when that score has genuinely swung open-and-closed recently, not just
-// crossed the threshold once.
+// on whoever's mouth happened to be open, not whoever was talking.
+//
+// The first fix (rank by max-min swing within a window) was itself wrong the
+// same way: a single big deliberate gape scores a *larger* range than real
+// speech, which is smaller but rapid, so an exaggerated non-talking mouth
+// could still outrank an actually-talking one. Talking is oscillation --
+// several open/close cycles a second -- not amplitude, so count direction
+// reversals (how many times the score turns from opening to closing or back)
+// within the window instead of the raw high-low spread. A yawn or a single
+// wide gape produces ~0-1 reversals; conversational speech produces several
+// within the same window.
 const MOUTH_HISTORY_MS = 700;
-const MOUTH_ACTIVE_RANGE = 0.15; // min (max-min) jawOpen swing within the window to count as talking
+const MOUTH_DEADBAND = 0.04; // ignore a wobble smaller than this when detecting a direction change
+const MOUTH_MIN_REVERSALS = 2; // reversals within the window to count as "talking"
 const FACE_MATCH_DIST_NORM = 0.15; // max center movement (normalized) to still call it the same face
 
 export interface DetectedFace {
@@ -31,12 +39,12 @@ export interface DetectedFace {
   /** Instantaneous: jawOpen score is above threshold right now. */
   mouthOpen: boolean;
   mouthOpenScore: number;
-  /** Temporal: the mouth has been opening and closing recently -- this is
-   * "talking", and what bubble-anchoring should actually key off. */
+  /** Temporal: the mouth has been oscillating open/closed recently -- this
+   * is "talking", and what bubble-anchoring should actually key off. */
   mouthActive: boolean;
-  /** The actual (max-min) jawOpen swing behind `mouthActive`, so callers can
-   * rank *how* actively two simultaneously-talking faces are talking,
-   * instead of only a boolean. */
+  /** Reversal count behind `mouthActive`, so callers can rank *how* actively
+   * two simultaneously-active faces are talking (more reversals = more
+   * speech-like), instead of only a boolean. */
   mouthActivity: number;
   /** Stable identity across frames (nearest-position matched, since
    * MediaPipe gives no persistent face id) -- lets a caller "lock onto" a
@@ -54,9 +62,27 @@ interface MouthHistoryEntry {
 let mouthHistories: MouthHistoryEntry[] = [];
 let nextTrackId = 1;
 
+/** Direction reversals (opening<->closing) in a jawOpen time series, ignoring
+ * wobble smaller than MOUTH_DEADBAND so sensor noise doesn't count. */
+function countReversals(samples: { t: number; score: number }[]): number {
+  let reversals = 0;
+  let dir = 0; // -1 closing, 0 unknown, 1 opening
+  let ref = samples[0]?.score ?? 0;
+  for (let i = 1; i < samples.length; i++) {
+    const delta = samples[i].score - ref;
+    if (Math.abs(delta) < MOUTH_DEADBAND) continue;
+    const nextDir = delta > 0 ? 1 : -1;
+    if (dir !== 0 && nextDir !== dir) reversals++;
+    dir = nextDir;
+    ref = samples[i].score;
+  }
+  return reversals;
+}
+
 /** Nearest-neighbor match each detected face to its history from recent
  * frames (MediaPipe gives no persistent face id), then derive `mouthActive`
- * from how much that face's jawOpen score has actually swung recently. */
+ * from how many times that face's jawOpen score has actually reversed
+ * direction recently -- oscillation, not amplitude. */
 function withMouthActivity(
   faces: Omit<DetectedFace, "mouthActive" | "mouthActivity" | "trackId">[],
   nowMs: number
@@ -86,10 +112,9 @@ function withMouthActivity(
     );
     nextHistories.push({ id, centerXNorm: f.centerXNorm, centerYNorm: cy, samples });
 
-    const scores = samples.map((s) => s.score);
-    const range = scores.length >= 3 ? Math.max(...scores) - Math.min(...scores) : 0;
+    const reversals = samples.length >= 3 ? countReversals(samples) : 0;
 
-    return { ...f, mouthActive: range > MOUTH_ACTIVE_RANGE, mouthActivity: range, trackId: id };
+    return { ...f, mouthActive: reversals >= MOUTH_MIN_REVERSALS, mouthActivity: reversals, trackId: id };
   });
 
   mouthHistories = nextHistories;
