@@ -3,6 +3,28 @@
 Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
 ticks go in README §0 with the owner+time protocol.
 
+## 2026-09-26 — direction-aware speech bubbles (tailed, three anchor styles)
+
+Per human feedback after live-testing on phone: speech bubbles now always
+appear near wherever the sound actually is, not just on an already-visible
+face. `drawSpeechBubble` (`src/render.ts`) picks one of three targets/styles:
+**anchored** (real face in frame — tail points at the mouth, ~85% down the
+face box), **maybePlayback** (bearing is on-screen but no face matched —
+dashed reddish bubble, the actual person-vs-playback case from README §6.3
+C6), and **directional** (bearing is off-FOV — neutral bubble docked next to
+that event's edge arrow, no "playback" label since being off-screen implies
+nothing about what's making the sound). All three are translucent
+rounded-rects with a small triangular tail pointing at the target, replacing
+the old plain box. Verified all three visually against the mock stream,
+including temporarily forcing the "playback" mock event off-FOV to exercise
+the directional path (reverted before committing — `git diff` confirmed
+clean). As the camera pans and a bearing crosses from off-FOV → on-FOV →
+face-matched, the bubble should visibly hand off between these three without
+extra state (each frame just recomputes from current bearing + current face
+detections) — full pan-across verification still needs a real speaker and a
+turning camera, which needs the real backend to be meaningful (mock bearings
+don't move on their own).
+
 ## 2026-09-26 — real camera + face detection, live over Tailscale
 
 Tested via a phone browser over a Tailscale HTTPS tunnel to the dev laptop

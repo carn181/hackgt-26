@@ -223,6 +223,25 @@ function drawUrgentFrame(ctx: CanvasRenderingContext2D, size: Size) {
   ctx.restore();
 }
 
+type BubbleStyle = "anchored" | "directional" | "maybePlayback";
+
+const BUBBLE_PALETTE: Record<BubbleStyle, { fill: string; stroke: string; dashed: boolean }> = {
+  // Locked onto a real, currently-visible speaking face.
+  anchored: { fill: "rgba(20,30,40,0.55)", stroke: URGENCY_COLOR.normal, dashed: false },
+  // Speaker isn't in frame (or camera hasn't turned to them yet) -- purely
+  // directional, not a claim about what's making the sound.
+  directional: { fill: "rgba(20,32,40,0.5)", stroke: "rgba(255,255,255,0.85)", dashed: false },
+  // Bearing IS on-screen but no face was found nearby -- the actual
+  // person-vs-playback ambiguity (README §6.3 C6).
+  maybePlayback: { fill: "rgba(60,20,20,0.55)", stroke: "#ff8a8a", dashed: true },
+};
+
+/**
+ * Speech bubble that always sits near wherever the sound actually is: right
+ * on the speaking face's mouth when anchored, otherwise near that event's own
+ * arrow marker (in-frame or off-FOV edge) so turning toward the speaker is
+ * what carries the bubble onto their face, not a separate lookup.
+ */
 function drawSpeechBubble(
   ctx: CanvasRenderingContext2D,
   size: Size,
@@ -233,39 +252,90 @@ function drawSpeechBubble(
   age: number
 ) {
   if (age <= 0) return;
-  const xNorm = bearingToScreenX(bearingDeg, calib);
-  const px = anchor ? anchor.face.centerXNorm * size.w : xNorm !== null ? xNorm * size.w : null;
-  if (px === null) return; // off-frame speech with no face: skip bubble, marker arrow already shown
-  const py = anchor ? anchor.face.bboxNorm.y * size.h - 14 : size.h * HORIZON_FRAC - 40;
+
+  let tipX: number;
+  let tipY: number;
+  let style: BubbleStyle;
+  if (anchor) {
+    tipX = anchor.face.centerXNorm * size.w;
+    tipY = (anchor.face.bboxNorm.y + anchor.face.bboxNorm.h * 0.85) * size.h; // ~mouth height
+    style = "anchored";
+  } else {
+    const xNorm = bearingToScreenX(bearingDeg, calib);
+    if (xNorm !== null) {
+      tipX = xNorm * size.w;
+      style = "maybePlayback";
+    } else {
+      const normBearing = normalizeDeg(bearingDeg - calib.head_yaw_offset_deg);
+      tipX = normBearing > 0 ? size.w - 20 : 20;
+      style = "directional";
+    }
+    tipY = size.h * HORIZON_FRAC - 46; // clear of that marker's own class/confidence label above it
+  }
 
   ctx.save();
   ctx.globalAlpha = age;
   ctx.font = `13px ${PIXEL_FONT}`;
-  const noFace = !anchor;
   const padding = 8;
+  const tailLen = 10;
   const metrics = ctx.measureText(text);
-  const w = metrics.width + padding * 2;
-  const h = 26;
-  const x = clamp(px - w / 2, 4, size.w - w - 4);
-  const y = Math.max(4, py - h);
+  const bw = metrics.width + padding * 2;
+  const bh = 26;
+  const bodyX = clamp(tipX - bw / 2, 4, size.w - bw - 4);
+  const bodyY = Math.max(4, tipY - tailLen - bh);
 
-  ctx.fillStyle = noFace ? "rgba(60,20,20,0.85)" : "rgba(20,30,40,0.85)";
-  ctx.strokeStyle = noFace ? "#ff8a8a" : URGENCY_COLOR.normal;
-  ctx.lineWidth = 1.5;
-  if (noFace) ctx.setLineDash([3, 3]);
-  roundRect(ctx, x, y, w, h, 6);
-  ctx.fill();
-  ctx.stroke();
+  const palette = BUBBLE_PALETTE[style];
+  drawTailedBubble(ctx, bodyX, bodyY, bw, bh, tipX, tipY, palette.fill, palette.stroke, palette.dashed);
 
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  outlinedText(ctx, text, x + padding, y + h / 2, "#fff", 2.5);
+  outlinedText(ctx, text, bodyX + padding, bodyY + bh / 2, "#fff", 2.5);
 
-  if (noFace) {
+  if (style === "maybePlayback") {
     ctx.font = `10px ${PIXEL_FONT}`;
     ctx.textBaseline = "alphabetic";
-    outlinedText(ctx, "no face — playback?", x, y - 4, "#ff8a8a", 2);
+    outlinedText(ctx, "no face — playback?", bodyX, bodyY - 4, "#ff8a8a", 2);
   }
+  ctx.restore();
+}
+
+/** Rounded-rect bubble body with a small triangular tail pointing at (tipX, tipY). */
+function drawTailedBubble(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  tipX: number,
+  tipY: number,
+  fill: string,
+  stroke: string,
+  dashed: boolean
+) {
+  const r = 8;
+  ctx.save();
+  ctx.setLineDash(dashed ? [3, 3] : []);
+  ctx.lineWidth = 1.5;
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  roundRect(ctx, x, y, w, h, r);
+  ctx.fill();
+  ctx.stroke();
+
+  const tailBaseX = clamp(tipX, x + r + 4, x + w - r - 4);
+  const tailHalf = 7;
+  ctx.beginPath();
+  ctx.moveTo(tailBaseX - tailHalf, y + h - 1);
+  ctx.lineTo(tipX, tipY);
+  ctx.lineTo(tailBaseX + tailHalf, y + h - 1);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(tailBaseX - tailHalf, y + h - 2);
+  ctx.lineTo(tipX, tipY);
+  ctx.lineTo(tailBaseX + tailHalf, y + h - 2);
+  ctx.stroke();
   ctx.restore();
 }
 
