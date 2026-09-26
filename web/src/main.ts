@@ -191,35 +191,92 @@ window.addEventListener("resize", resizeCanvas);
 /**
  * Nearest-face matching for each active speech bubble. A face "claims" a
  * speech event when its bearing (derived from screen position) is within
- * FACE_MATCH_TOLERANCE_DEG of the event's bearing. Preferring mouth-active
- * faces is what separates a real speaker from a loudspeaker (README §6.3 C6):
- * a playback source has no nearby face with a moving mouth, so it falls
- * through to the "no face" / playback rendering path.
+ * FACE_MATCH_TOLERANCE_DEG of the event's bearing -- but only when that
+ * bearing is actually trustworthy (small accuracy_deg; a real camera- or
+ * array-derived fix). Most segments right now come back with no usable
+ * bearing at all (source: "none", accuracy_deg: 180 -- one mono mic can't
+ * localize), which used to fall through to an unanchored bubble that landed
+ * wherever bearing 0° maps to: dead center between two people, which read as
+ * "it defaults to the center". That case now falls back to whichever face is
+ * the current "locked" speaker instead (see pickCurrentSpeaker below).
  */
 const FACE_MATCH_TOLERANCE_DEG = 15;
+const BEARING_TRUST_MAX_ACCURACY_DEG = 30;
+
+// How long a face has to be the clearest talker before the lock actually
+// switches to them, and how long the lock survives with nobody confirming
+// it. Two real people talking back and forth showed why both matter: without
+// the switch delay, one person's mouth flickering mid-sentence while the
+// other listens (a reactive smile, starting to interject) could steal the
+// bubble away from whoever the transcript actually belongs to; without the
+// grace period, an ordinary conversational pause (a breath, "um") looked
+// exactly like "nobody is the speaker anymore".
+const LOCK_SWITCH_MS = 450;
+const LOCK_GRACE_MS = 2500;
+
+let lockedSpeakerTrackId: number | null = null;
+let lockedSpeakerLastActiveMs = 0;
+let candidateSpeakerTrackId: number | null = null;
+let candidateSpeakerSinceMs = 0;
+
+/** Debounced "who is talking right now" across frames, by stable trackId. */
+function pickCurrentSpeaker(faces: DetectedFace[], nowMs: number): number | null {
+  let top: DetectedFace | null = null;
+  for (const f of faces) {
+    if (!f.mouthActive) continue;
+    if (!top || f.mouthActivity > top.mouthActivity) top = f;
+  }
+
+  if (top) {
+    if (top.trackId === lockedSpeakerTrackId) {
+      lockedSpeakerLastActiveMs = nowMs;
+    } else {
+      if (top.trackId !== candidateSpeakerTrackId) {
+        candidateSpeakerTrackId = top.trackId;
+        candidateSpeakerSinceMs = nowMs;
+      }
+      if (lockedSpeakerTrackId === null || nowMs - candidateSpeakerSinceMs >= LOCK_SWITCH_MS) {
+        lockedSpeakerTrackId = top.trackId;
+        lockedSpeakerLastActiveMs = nowMs;
+      }
+    }
+  }
+
+  if (lockedSpeakerTrackId !== null && nowMs - lockedSpeakerLastActiveMs > LOCK_GRACE_MS) {
+    lockedSpeakerTrackId = null;
+  }
+
+  return lockedSpeakerTrackId;
+}
 
 function computeFaceAnchors(
   faces: DetectedFace[],
   calibNow: Calibration
 ): Map<string, FaceAnchor | null> {
   const result = new Map<string, FaceAnchor | null>();
+  const lockedTrackId = pickCurrentSpeaker(faces, performance.now());
   const faceBearings = faces.map((f) => ({ face: f, bearingDeg: screenXToBearingDeg(f.centerXNorm, calibNow) }));
 
   for (const [speechId, s] of state.speech) {
     const ev = state.events.get(s.parent_event);
-    const targetBearing = ev ? ev.renderBearing : s.bearing_deg;
-    let best: FaceAnchor | null = null;
-    let bestScore = -Infinity;
-    for (const fb of faceBearings) {
-      const diff = Math.abs(normalizeDeg(fb.bearingDeg - targetBearing));
-      if (diff > FACE_MATCH_TOLERANCE_DEG) continue;
-      const score = (fb.face.mouthActive ? 1000 : 0) - diff;
-      if (score > bestScore) {
-        bestScore = score;
-        best = fb;
+    let chosen: FaceAnchor | null = null;
+
+    if (ev && ev.accuracy_deg <= BEARING_TRUST_MAX_ACCURACY_DEG) {
+      let bestDiff = FACE_MATCH_TOLERANCE_DEG;
+      for (const fb of faceBearings) {
+        const diff = Math.abs(normalizeDeg(fb.bearingDeg - ev.renderBearing));
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          chosen = fb;
+        }
       }
     }
-    result.set(speechId, best);
+
+    if (!chosen && lockedTrackId !== null) {
+      chosen = faceBearings.find((fb) => fb.face.trackId === lockedTrackId) ?? null;
+    }
+
+    result.set(speechId, chosen);
   }
   return result;
 }

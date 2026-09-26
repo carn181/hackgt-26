@@ -79,11 +79,22 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasEle
   }
   if (unlocated.length) drawUnlocatedList(ctx, size, unlocated, state);
 
+  // Same stacking idea as markers above: two bubbles that both want to point
+  // at nearly the same spot (e.g. one anchored to a face right where an
+  // unanchored one's fallback position also lands) otherwise draw on top of
+  // each other -- confusing on its own, and easy to misread as one bubble
+  // glitching rather than two separate, real utterances.
+  const placedBubbles: { x: number; stack: number }[] = [];
   for (const [speechId, s] of state.speech) {
     if (!visibleIds.has(s.parent_event)) continue;
     const ev = state.events.get(s.parent_event);
+    const bearingDeg = ev?.renderBearing ?? s.bearing_deg;
     const anchor = opts.faceAnchors.get(speechId) ?? null;
-    drawSpeechBubble(ctx, size, s.text, ev?.renderBearing ?? s.bearing_deg, calib, anchor, state.speechAge(s));
+    const { tipX } = resolveBubbleTarget(size, calib, bearingDeg, anchor);
+    let stack = 0;
+    while (placedBubbles.some((p) => Math.abs(p.x - tipX) < 90 && p.stack === stack)) stack++;
+    placedBubbles.push({ x: tipX, stack });
+    drawSpeechBubble(ctx, size, s.text, bearingDeg, calib, anchor, state.speechAge(s), stack * 36);
   }
 
   drawCompass(ctx, size, visible, calib);
@@ -306,6 +317,33 @@ const BUBBLE_PALETTE: Record<BubbleStyle, { fill: string; stroke: string; dashed
   maybePlayback: { fill: "rgba(60,20,20,0.55)", stroke: "#ff8a8a", dashed: true },
 };
 
+/** Where a bubble wants to point, before any stacking offset -- pulled out
+ * of drawSpeechBubble so the caller can pre-compute every active bubble's
+ * target position in one pass and detect collisions before drawing any of
+ * them (two bubbles landing on the same spot otherwise just draw on top of
+ * each other). */
+function resolveBubbleTarget(
+  size: Size,
+  calib: Calibration,
+  bearingDeg: number,
+  anchor: FaceAnchor | null
+): { tipX: number; tipY: number; style: BubbleStyle } {
+  if (anchor) {
+    return {
+      tipX: anchor.face.centerXNorm * size.w,
+      tipY: (anchor.face.bboxNorm.y + anchor.face.bboxNorm.h * 0.85) * size.h, // ~mouth height
+      style: "anchored",
+    };
+  }
+  const xNorm = bearingToScreenX(bearingDeg, calib);
+  const tipY = size.h * HORIZON_FRAC - 46; // clear of that marker's own class/confidence label above it
+  if (xNorm !== null) {
+    return { tipX: xNorm * size.w, tipY, style: "maybePlayback" };
+  }
+  const normBearing = normalizeDeg(bearingDeg - calib.head_yaw_offset_deg);
+  return { tipX: normBearing > 0 ? size.w - 20 : 20, tipY, style: "directional" };
+}
+
 /**
  * Speech bubble that always sits near wherever the sound actually is: right
  * on the speaking face's mouth when anchored, otherwise near that event's own
@@ -319,29 +357,13 @@ function drawSpeechBubble(
   bearingDeg: number,
   calib: Calibration,
   anchor: FaceAnchor | null,
-  age: number
+  age: number,
+  stackOffsetY = 0
 ) {
   if (age <= 0) return;
 
-  let tipX: number;
-  let tipY: number;
-  let style: BubbleStyle;
-  if (anchor) {
-    tipX = anchor.face.centerXNorm * size.w;
-    tipY = (anchor.face.bboxNorm.y + anchor.face.bboxNorm.h * 0.85) * size.h; // ~mouth height
-    style = "anchored";
-  } else {
-    const xNorm = bearingToScreenX(bearingDeg, calib);
-    if (xNorm !== null) {
-      tipX = xNorm * size.w;
-      style = "maybePlayback";
-    } else {
-      const normBearing = normalizeDeg(bearingDeg - calib.head_yaw_offset_deg);
-      tipX = normBearing > 0 ? size.w - 20 : 20;
-      style = "directional";
-    }
-    tipY = size.h * HORIZON_FRAC - 46; // clear of that marker's own class/confidence label above it
-  }
+  const { tipX, tipY: rawTipY, style } = resolveBubbleTarget(size, calib, bearingDeg, anchor);
+  const tipY = rawTipY - stackOffsetY;
 
   ctx.save();
   ctx.globalAlpha = age;

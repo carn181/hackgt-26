@@ -34,21 +34,31 @@ export interface DetectedFace {
   /** Temporal: the mouth has been opening and closing recently -- this is
    * "talking", and what bubble-anchoring should actually key off. */
   mouthActive: boolean;
+  /** The actual (max-min) jawOpen swing behind `mouthActive`, so callers can
+   * rank *how* actively two simultaneously-talking faces are talking,
+   * instead of only a boolean. */
+  mouthActivity: number;
+  /** Stable identity across frames (nearest-position matched, since
+   * MediaPipe gives no persistent face id) -- lets a caller "lock onto" a
+   * speaker across frames instead of re-deciding from scratch each time. */
+  trackId: number;
 }
 
 interface MouthHistoryEntry {
+  id: number;
   centerXNorm: number;
   centerYNorm: number;
   samples: { t: number; score: number }[];
 }
 
 let mouthHistories: MouthHistoryEntry[] = [];
+let nextTrackId = 1;
 
 /** Nearest-neighbor match each detected face to its history from recent
  * frames (MediaPipe gives no persistent face id), then derive `mouthActive`
  * from how much that face's jawOpen score has actually swung recently. */
 function withMouthActivity(
-  faces: Omit<DetectedFace, "mouthActive">[],
+  faces: Omit<DetectedFace, "mouthActive" | "mouthActivity" | "trackId">[],
   nowMs: number
 ): DetectedFace[] {
   const claimed = new Set<number>();
@@ -68,17 +78,18 @@ function withMouthActivity(
       }
     }
     const prevSamples = bestIdx >= 0 ? mouthHistories[bestIdx].samples : [];
+    const id = bestIdx >= 0 ? mouthHistories[bestIdx].id : nextTrackId++;
     if (bestIdx >= 0) claimed.add(bestIdx);
 
     const samples = [...prevSamples, { t: nowMs, score: f.mouthOpenScore }].filter(
       (s) => nowMs - s.t <= MOUTH_HISTORY_MS
     );
-    nextHistories.push({ centerXNorm: f.centerXNorm, centerYNorm: cy, samples });
+    nextHistories.push({ id, centerXNorm: f.centerXNorm, centerYNorm: cy, samples });
 
     const scores = samples.map((s) => s.score);
     const range = scores.length >= 3 ? Math.max(...scores) - Math.min(...scores) : 0;
 
-    return { ...f, mouthActive: range > MOUTH_ACTIVE_RANGE };
+    return { ...f, mouthActive: range > MOUTH_ACTIVE_RANGE, mouthActivity: range, trackId: id };
   });
 
   mouthHistories = nextHistories;
@@ -124,7 +135,7 @@ export function initFaceLandmarker(): Promise<FaceLandmarker> {
 export function detectFaces(video: HTMLVideoElement, timestampMs: number): DetectedFace[] {
   if (!landmarker) return [];
   const result = landmarker.detectForVideo(video, timestampMs);
-  const faces: Omit<DetectedFace, "mouthActive">[] = [];
+  const faces: Omit<DetectedFace, "mouthActive" | "mouthActivity" | "trackId">[] = [];
 
   for (let i = 0; i < result.faceLandmarks.length; i++) {
     const lm = result.faceLandmarks[i];
