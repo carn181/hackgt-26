@@ -419,7 +419,7 @@ function drawFaces(ctx: CanvasRenderingContext2D, size: Size, faces: DetectedFac
     const w = f.bboxNorm.w * size.w;
     const h = f.bboxNorm.h * size.h;
     ctx.strokeRect(x, y, w, h);
-    if (f.mouthOpen) {
+    if (f.mouthActive) {
       ctx.fillStyle = "#7CFC9A";
       ctx.beginPath();
       ctx.arc(x + w / 2, y + h + 8, 3, 0, Math.PI * 2);

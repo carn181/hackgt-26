@@ -13,12 +13,76 @@ const MODEL_CDN =
 
 const MOUTH_OPEN_THRESHOLD = 0.3;
 
+// A held-open mouth (smiling, yawning, resting open) and an actually-talking
+// mouth both cross MOUTH_OPEN_THRESHOLD; only the second one is *moving*.
+// Two real speakers side by side made this visible: the bubble kept landing
+// on whoever's mouth happened to be open, not whoever was talking. Track a
+// short per-face history of the raw jawOpen score and call it "active" only
+// when that score has genuinely swung open-and-closed recently, not just
+// crossed the threshold once.
+const MOUTH_HISTORY_MS = 700;
+const MOUTH_ACTIVE_RANGE = 0.15; // min (max-min) jawOpen swing within the window to count as talking
+const FACE_MATCH_DIST_NORM = 0.15; // max center movement (normalized) to still call it the same face
+
 export interface DetectedFace {
   /** Normalized [0,1] bounding box, origin top-left, video-frame space. */
   bboxNorm: { x: number; y: number; w: number; h: number };
   centerXNorm: number;
+  /** Instantaneous: jawOpen score is above threshold right now. */
   mouthOpen: boolean;
   mouthOpenScore: number;
+  /** Temporal: the mouth has been opening and closing recently -- this is
+   * "talking", and what bubble-anchoring should actually key off. */
+  mouthActive: boolean;
+}
+
+interface MouthHistoryEntry {
+  centerXNorm: number;
+  centerYNorm: number;
+  samples: { t: number; score: number }[];
+}
+
+let mouthHistories: MouthHistoryEntry[] = [];
+
+/** Nearest-neighbor match each detected face to its history from recent
+ * frames (MediaPipe gives no persistent face id), then derive `mouthActive`
+ * from how much that face's jawOpen score has actually swung recently. */
+function withMouthActivity(
+  faces: Omit<DetectedFace, "mouthActive">[],
+  nowMs: number
+): DetectedFace[] {
+  const claimed = new Set<number>();
+  const nextHistories: MouthHistoryEntry[] = [];
+
+  const result = faces.map((f) => {
+    const cy = f.bboxNorm.y + f.bboxNorm.h / 2;
+    let bestIdx = -1;
+    let bestDist = FACE_MATCH_DIST_NORM;
+    for (let i = 0; i < mouthHistories.length; i++) {
+      if (claimed.has(i)) continue;
+      const h = mouthHistories[i];
+      const d = Math.hypot(f.centerXNorm - h.centerXNorm, cy - h.centerYNorm);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    const prevSamples = bestIdx >= 0 ? mouthHistories[bestIdx].samples : [];
+    if (bestIdx >= 0) claimed.add(bestIdx);
+
+    const samples = [...prevSamples, { t: nowMs, score: f.mouthOpenScore }].filter(
+      (s) => nowMs - s.t <= MOUTH_HISTORY_MS
+    );
+    nextHistories.push({ centerXNorm: f.centerXNorm, centerYNorm: cy, samples });
+
+    const scores = samples.map((s) => s.score);
+    const range = scores.length >= 3 ? Math.max(...scores) - Math.min(...scores) : 0;
+
+    return { ...f, mouthActive: range > MOUTH_ACTIVE_RANGE };
+  });
+
+  mouthHistories = nextHistories;
+  return result;
 }
 
 let landmarker: FaceLandmarker | null = null;
@@ -60,7 +124,7 @@ export function initFaceLandmarker(): Promise<FaceLandmarker> {
 export function detectFaces(video: HTMLVideoElement, timestampMs: number): DetectedFace[] {
   if (!landmarker) return [];
   const result = landmarker.detectForVideo(video, timestampMs);
-  const faces: DetectedFace[] = [];
+  const faces: Omit<DetectedFace, "mouthActive">[] = [];
 
   for (let i = 0; i < result.faceLandmarks.length; i++) {
     const lm = result.faceLandmarks[i];
@@ -87,5 +151,5 @@ export function detectFaces(video: HTMLVideoElement, timestampMs: number): Detec
     });
   }
 
-  return faces;
+  return withMouthActivity(faces, timestampMs);
 }

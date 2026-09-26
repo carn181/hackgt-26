@@ -213,7 +213,7 @@ function computeFaceAnchors(
     for (const fb of faceBearings) {
       const diff = Math.abs(normalizeDeg(fb.bearingDeg - targetBearing));
       if (diff > FACE_MATCH_TOLERANCE_DEG) continue;
-      const score = (fb.face.mouthOpen ? 1000 : 0) - diff;
+      const score = (fb.face.mouthActive ? 1000 : 0) - diff;
       if (score > bestScore) {
         bestScore = score;
         best = fb;
@@ -249,7 +249,7 @@ async function detectFacesIfReady() {
             xc: f.centerXNorm,
             w: f.bboxNorm.w,
             mouth: f.mouthOpenScore,
-            mouthActive: f.mouthOpen,
+            mouthActive: f.mouthActive,
           })),
         });
       }
