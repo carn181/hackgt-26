@@ -68,7 +68,7 @@ Unchecked P0 items at the 04:00 acceptance run decide what the video is allowed 
 - [ ] B13 `requirements.txt` installs clean into a **fresh** venv on a second machine — evidence: install log
 
 ### C — Frontend HUD
-- [ ] C1 App runs, camera opens, WS connects, `backend_status` (model + transport) rendered
+- [x] C1 App runs, camera opens, WS connects, `backend_status` (model + transport) rendered — C, 15:35
 - [x] C2 Compass + markers render correctly from **fake events** (works before the backend is live) — C, 14:04
 - [ ] C3 Marker lands within ±10 % frame width for claps at −40°/0°/+40°
 - [x] C4 Edge chevrons when |bearing| > fov/2; `ambiguous:true` renders two mirrored candidates — C, 14:04
