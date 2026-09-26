@@ -44,6 +44,15 @@ import numpy as np
 
 PERF = time.perf_counter
 
+# Silence at the head of every generated file. `pw-play` needs ~1 s to start
+# (measured 0.25-2.2 s), and without this lead-in the player's start-up eats the
+# first burst — with a one-burst file that means the microphone hears *nothing*
+# and the run "proves" the array is deaf. This is the fix for that whole class of
+# false measurement.
+LEAD_IN_S = 1.5
+# Where the first burst sits inside the lead-in.
+FIRST_BURST_OFFSET_S = 0.10
+
 
 def _pct(values: list[float], q: float) -> float:
     if not values:
@@ -79,12 +88,13 @@ def make_clap(path: Path, shots: int = 1, side: str = "both", rate: int = 16000)
 
     rng = np.random.default_rng(7)
     gap = int(0.7 * rate)
-    total = shots * (int(0.35 * rate) + gap)
+    lead = int(LEAD_IN_S * rate)
+    total = lead + shots * (int(0.35 * rate) + gap)
     out = np.zeros(total, dtype=np.float32)
     nyq = rate / 2
     sos = signal.butter(4, [400 / nyq, min(6000 / nyq, 0.95)], btype="bandpass", output="sos")
     for s in range(shots):
-        at = s * (int(0.35 * rate) + gap) + int(0.05 * rate)
+        at = lead + s * (int(0.35 * rate) + gap) + int(FIRST_BURST_OFFSET_S * rate)
         n = int(0.25 * rate)
         burst = np.zeros(n)
         for offset, gain in ((0, 1.0), (int(0.011 * rate), 0.45), (int(0.027 * rate), 0.25)):
@@ -110,39 +120,79 @@ def make_tone(path: Path, shots: int = 1, side: str = "both", freqs: tuple[float
 
     gap = int(0.6 * rate)
     body = int(0.30 * rate)
-    out = np.zeros(shots * (body + gap), dtype=np.float32)
+    lead = int(LEAD_IN_S * rate)
+    out = np.zeros(lead + shots * (body + gap), dtype=np.float32)
     t = np.arange(body) / rate
     env = np.minimum(1.0, np.minimum(t / 0.01, (body / rate - t) / 0.02)).clip(0)
     sig = 0.5 * (np.sin(2 * np.pi * freqs[0] * t) + np.sin(2 * np.pi * freqs[1] * t)) * env
     for s in range(shots):
-        at = s * (body + gap) + int(0.1 * rate)
+        at = lead + s * (body + gap) + int(FIRST_BURST_OFFSET_S * rate)
         out[at : at + body] += sig.astype(np.float32)
     out *= 0.9
     sf.write(path, _stereo(out, side), rate, subtype="PCM_16")
 
 
-def build_injects(spec: str, side: str, tmp: Path) -> list[tuple[Path, str]]:
-    """[(wav, side)] — two entries when the caller asked for a sign-flip test."""
+def build_injects(spec: str, side: str, tmp: Path, shots: int) -> list[tuple[Path, str]]:
+    """[(wav, side)] — two entries when the caller asked for a sign-flip test.
+
+    All `shots` bursts live *inside* the file, played by one player process. The
+    first version started a `pw-play` per shot and relied on the gap between
+    them; measured start-up is 0.25–2.2 s, so shots overlapped, merged into one
+    detected segment, and the sign-flip test compared sounds that were playing
+    simultaneously.
+    """
     if spec.startswith("file:"):
         return [(Path(spec.split(":", 1)[1]), side)]
     make = make_tone if spec == "tone" else make_clap
     if side == "flip":
         left, right = tmp / f"{spec}_left.wav", tmp / f"{spec}_right.wav"
-        make(left, 1, "left")
-        make(right, 1, "right")
+        make(left, shots, "left")
+        make(right, shots, "right")
         return [(left, "left"), (right, "right")]
     path = tmp / f"{spec}_{side}.wav"
-    make(path, 1, side)
+    make(path, shots, side)
     return [(path, side)]
 
 
-def default_gap(spec: str) -> float:
+def shot_gap(spec: str) -> float:
+    """Spacing between bursts inside a generated file (seconds)."""
     return 0.9 if spec == "tone" else 1.05
 
 
-def play(path: Path) -> subprocess.Popen | None:
-    """Play a wav through the default sink. Returns the process (or None)."""
-    for argv in (["pw-play", str(path)], ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(path)]):
+def resolve_sink(explicit: str | None) -> str | None:
+    """The sink to play into: the caller's choice, else the current default.
+
+    Pinned for the whole run on purpose. A default sink that moves mid-run (a
+    Bluetooth headset appearing, a monitor being re-routed) silently sends the
+    stimulus somewhere the microphone cannot hear, and the run then "proves" the
+    array is deaf. That is a mistake this tool has already made once.
+    """
+    import shutil
+
+    if explicit:
+        return explicit
+    if shutil.which("wpctl") is None:
+        return None
+    try:
+        out = subprocess.run(
+            ["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"],
+            capture_output=True, text=True, timeout=2.0, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        if "node.name" in line:
+            return line.split("=", 1)[1].strip().strip('"')
+    return None
+
+
+def play(path: Path, sink: str | None = None) -> subprocess.Popen | None:
+    """Play a wav through `sink` (or the default). Returns the process."""
+    target = ["--target", sink] if sink else []
+    for argv in (
+        ["pw-play", *target, str(path)],
+        ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(path)],
+    ):
         try:
             return subprocess.Popen(argv)
         except FileNotFoundError:
@@ -168,6 +218,7 @@ class Bench:
         self.switches: list[tuple[float, str]] = []   # (perf, side) when the source moved
         self.errors: list[str] = []
         self.warning = ""
+        self.sink: str | None = None
         self.bytes = 0
         self.first_msg_perf: float | None = None
         self.stop = asyncio.Event()
@@ -209,19 +260,28 @@ class Bench:
                 return
             await asyncio.sleep(1.0 / self.ping_rate)
 
-    async def injector(self, segments: list[tuple[Path, str]], shots: int, gap: float) -> None:
+    async def injector(self, segments: list[tuple[Path, str]], gap: float) -> None:
         await asyncio.sleep(2.0)  # let the handshake and status settle
         for wav, side in segments:
             self.switches.append((PERF(), side))
-            for _ in range(shots):
-                proc = play(wav)
-                self.injected.append(PERF())
-                if proc is None:
-                    self.errors.append("no audio player found (pw-play/ffplay)")
-                    return
-                await asyncio.sleep(gap)
+            proc = play(wav, self.sink)
+            self.injected.append(PERF())
+            if proc is None:
+                self.errors.append("no audio player found (pw-play/ffplay)")
+                return
+            await asyncio.sleep(self.file_seconds(wav) + 0.8)
         if self.injected:
             await asyncio.sleep(1.5)  # let the last event land
+
+    @staticmethod
+    def file_seconds(wav: Path) -> float:
+        import wave
+
+        try:
+            with wave.open(str(wav), "rb") as f:
+                return f.getnframes() / float(f.getframerate())
+        except (OSError, wave.Error):
+            return 0.0
 
     def side_of(self, recv: float) -> str:
         """Which speaker the sound came from, for a receipt at client time `recv`."""
@@ -264,10 +324,12 @@ async def run(args: argparse.Namespace) -> int:
     import websockets
 
     tmp = Path(tempfile.mkdtemp(prefix="bench-"))
-    segments = build_injects(args.inject, args.inject_side, tmp)
-    gap = default_gap(args.inject) if args.inject != "none" else 0.0
+    segments = build_injects(args.inject, args.inject_side, tmp, args.shots)
+    gap = shot_gap(args.inject) if args.inject != "none" else 0.0
     bench = Bench(args.url, args.ping_rate)
+    bench.sink = resolve_sink(args.sink)
     bench.warning = sink_volume_warning()
+    print(f"playback sink: {bench.sink or 'default'}")
     if bench.warning:
         print(f"warning: {bench.warning}", file=sys.stderr)
 
@@ -278,7 +340,7 @@ async def run(args: argparse.Namespace) -> int:
             reader = asyncio.create_task(bench.reader(ws))
             pinger = asyncio.create_task(bench.pinger(ws))
             inj = (
-                asyncio.create_task(bench.injector(segments, args.shots, gap))
+                asyncio.create_task(bench.injector(segments, gap))
                 if args.inject != "none"
                 else None
             )
@@ -298,6 +360,7 @@ async def run(args: argparse.Namespace) -> int:
 
 def report(args: argparse.Namespace, bench: Bench, segments: list[tuple[Path, str]]) -> int:
     off = bench.offset()
+    gap = shot_gap(args.inject) if args.inject != "none" else 0.0
     transport: list[float] = []
     total: list[float] = []       # onset -> client
     internal: list[float] = []    # onset -> emitted
@@ -317,7 +380,10 @@ def report(args: argparse.Namespace, bench: Bench, segments: list[tuple[Path, st
         sides.setdefault(side, []).append(float(msg.get("bearing_deg") or 0.0))
         play_t = max((p for p in bench.injected if p <= recv), default=None)
         if play_t is not None:
-            from_play.append((recv - play_t) * 1e3)
+            # The burst sits `k` gaps into its file: count how many events of this
+            # side have already been seen.
+            k = sum(1 for m in bench.events if bench.side_of(m["_recv"]) == side and m["_recv"] < recv)
+            from_play.append((recv - play_t - LEAD_IN_S - FIRST_BURST_OFFSET_S - k * gap) * 1e3)
         rows.append(
             (msg.get("id"), msg.get("class"), msg.get("confidence"), msg.get("bearing_deg"),
              msg.get("accuracy_deg"), msg.get("ambiguous"), msg.get("urgency"), msg.get("source"),
@@ -370,7 +436,7 @@ def report(args: argparse.Namespace, bench: Bench, segments: list[tuple[Path, st
         return 0
 
     print("\n=== backend ↔ frontend, real sound ===")
-    print(f"url {args.url}   injected {[str(p) for p, _ in segments]} ({args.shots} shots each, {default_gap(args.inject):.2f}s apart)")
+    print(f"url {args.url}   injected {[str(p) for p, _ in segments]} ({args.shots} bursts each, {gap:.2f}s apart inside the file)")
     print(f"connect {bench.connect_ms:.1f} ms   messages {bench.by_type}")
     print(f"ping echo RTT (the HUD's own metric)  {_stats(bench.rtts)}")
     print(f"backend onset→emit                    {_stats(internal)}")
@@ -436,6 +502,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--duration", type=float, default=18.0, help="seconds to listen")
     p.add_argument("--ping-rate", type=float, default=5.0, help="ping/s (the HUD uses 1)")
     p.add_argument("--inject", default="clap", help="clap | tone | file:/path.wav | none")
+    p.add_argument("--sink", default=None, help="PipeWire sink to play into (default: resolved once, then pinned)")
     p.add_argument("--inject-side", default="both", choices=["both", "left", "right", "flip"],
                    help="which speaker plays it; `flip` runs left then right (the sign-flip test)")
     p.add_argument("--shots", type=int, default=3)

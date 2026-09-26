@@ -37,7 +37,15 @@ from .beam import analysis_channel, delay_and_sum
 from .calib_fit import SpacingFit
 from .config import available_profiles, load_profile, write_profile_spacing
 from .detect import Onset, OnsetDetector, Offset
-from .fuse import ASR_MAX_SECONDS, CLASSIFY_WINDOW, DEFAULT_TAIL_S, DOA_TAIL_S, DOA_WINDOW, FusionEngine
+from .fuse import (
+    ASR_MAX_SECONDS,
+    CLASSIFY_WINDOW,
+    DEFAULT_TAIL_S,
+    DOA_TAIL_S,
+    DOA_WINDOW,
+    MIN_EVENT_CONFIDENCE,
+    FusionEngine,
+)
 from .ingest import BandPass, microphones_health, open_source
 from .ring import RingBuffer
 from .vision import FACE_TTL_S, VisionTracker
@@ -123,6 +131,7 @@ class Backend:
         self._git_rev = self._read_git_rev()
         self._last_status = 0.0
         self._last_array = 0.0
+        self._suppressed = 0
         self._presence = False
         self.source = open_source(
             args.source,
@@ -147,6 +156,7 @@ class Backend:
             names=tuple(args.names),
             mode=args.mode,
             classify_tail_s=args.classify_tail,
+            min_confidence=args.min_confidence,
         )
         self.transcriber = None
         self._asr_q: queue.Queue = queue.Queue(maxsize=4)
@@ -320,9 +330,15 @@ class Backend:
             lag_correction=(self.fit.sin_bias(), self.fit.scale()),
         )
         self._observe_for_spacing(seg, face, msg)
-        if self.fusion.is_reportable(msg["class"]) and self.fusion.should_send(msg):
+        # One decision, one log line: the terminal must not show events the wire
+        # never carried (that mismatch is exactly what makes "the HUD is broken"
+        # look true when the events are being filtered on purpose).
+        send = self.fusion.is_reportable(msg) and self.fusion.should_send(msg)
+        if send:
             self.hub.publish(msg)
-        self._log_event(msg, t_now, t_onset)
+        else:
+            self._suppressed += 1
+        self._log_event(msg, t_now, t_onset, sent=send)
         self._maybe_ready(check_every=10)
 
     def _observe_for_spacing(self, seg, face, msg) -> None:
@@ -370,7 +386,9 @@ class Backend:
         seg = self.fusion.pending.pop(off.onset.index, None)
         if seg is None:
             return
-        if not self.fusion.wants_speech(seg.cls, off.duration_s):
+        if not self.fusion.wants_speech(
+            seg.cls, off.duration_s, seg.confidence, seg.msg.get("snr_db")
+        ):
             return
         rate = self.rate
         start = max(0, off.onset.index - int(round(0.15 * rate)))
@@ -416,19 +434,23 @@ class Backend:
             except Exception:
                 log.exception("asr worker failed")
 
-    def _log_event(self, msg: dict, t_now: float, t_onset: float) -> None:
+    def _log_event(self, msg: dict, t_now: float, t_onset: float, sent: bool = True) -> None:
         if not self.args.print_events:
             return
+        note = "" if sent else "  SUPPRESSED"
         print(
             f"[{t_now:7.2f}s] {msg['class']:<22} {msg['confidence']:.2f} "
             f"{msg['bearing_deg']:+6.1f}° ±{msg['accuracy_deg']:.0f}° "
             f"{'AMBIG' if msg['ambiguous'] else '     '} {msg['urgency']:<6} {msg['source']:<12} "
-            f"onset→ws {(t_now - t_onset) * 1e3:5.0f} ms",
+            f"snr {float(msg.get('snr_db', 0)):5.1f} dB  onset→ws {(t_now - t_onset) * 1e3:5.0f} ms{note}",
             flush=True,
         )
         n = len(self.fusion.latencies_ms)
         if n % LATENCY_LOG_EVERY == 0:
-            log.info("onset→event latency %s (n=%d)", self.fusion.latency_summary(), n)
+            log.info(
+                "onset→event latency %s (n=%d) · events sent %d, suppressed %d",
+                self.fusion.latency_summary(), n, self.fusion.emitted - self._suppressed, self._suppressed,
+            )
 
     # -- status messages ---------------------------------------------------
     def calibration(self) -> dict:
@@ -638,6 +660,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--block-ms", type=float, default=20.0)
     p.add_argument("--classify-tail", type=float, default=DEFAULT_TAIL_S,
                    help="seconds of sound to wait for before classifying an onset")
+    p.add_argument("--min-confidence", type=float, default=MIN_EVENT_CONFIDENCE,
+                   help="drop events whose top class scores below this (0 = report everything)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--ws-port", type=int, default=8000)
     p.add_argument("--mode", default="all", choices=["all", "important", "quiet"])

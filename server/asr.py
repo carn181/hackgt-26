@@ -43,10 +43,20 @@ log = logging.getLogger("server.asr")
 RATE_HZ = 16000  # Whisper's feature extractor is fixed at 16 kHz
 MIN_SECONDS = 0.25
 MIN_SAMPLES = int(MIN_SECONDS * RATE_HZ)
-
 # Peak amplitude below this is a dead channel, not a quiet room: 16-bit LSB is
 # 3e-5, so nothing a microphone actually heard lands here. See `transcribe`.
 SILENCE_PEAK = 1e-4
+# Whisper's own "no speech in this audio" probability, averaged over segments.
+# Above this the decode is an invention (measured: room noise produced "You" and
+# "maybe be each pec" on 10 s segments), and a fabricated caption is worse than a
+# missing one.
+MAX_NO_SPEECH_PROB = 0.6
+# Decode threads. Measured on this 16-core laptop with a 6.0 s speech clip:
+# 2 threads 1.39 s, 4 threads 0.76 s, 8 threads 0.81 s wall. Four is the knee —
+# it keeps the decode under a second without handing Whisper the whole machine
+# (a 10 s *noise* segment decoded with the default thread count cost 11.9 s and
+# made the box audibly busy).
+CPU_THREADS = 4
 
 
 @dataclass
@@ -102,6 +112,11 @@ class Transcriber:
                 device=self.device,
                 compute_type=self.compute_type,
                 download_root=self.cache_dir,
+                # Cap the decode threads: Whisper sharing the box with the capture
+                # pipeline was measured eating a whole core group for 12 s per long
+                # segment. Two threads keeps captions arriving without the audio
+                # thread ever waiting behind it.
+                cpu_threads=CPU_THREADS,
             )
         except Exception as exc:  # any failure here just means "no captions"
             self.enabled = False
@@ -146,16 +161,26 @@ class Transcriber:
             )
             texts: list[str] = []
             logprobs: list[float] = []
+            no_speech: list[float] = []
             for segment in segments:  # the generator is lazy: the work happens here
                 texts.append(segment.text)
                 if segment.avg_logprob is not None:
                     logprobs.append(float(segment.avg_logprob))
+                if getattr(segment, "no_speech_prob", None) is not None:
+                    no_speech.append(float(segment.no_speech_prob))
         except Exception as exc:  # a decode failure must not kill the audio loop
             log.warning("transcribe failed: %s", exc)
             return None
 
         text = " ".join(t.strip() for t in texts).strip()
         if not text:
+            return None
+        # The model's own "there was no speech here" probability is the reliable
+        # guard against a hallucinated caption: on a room-noise segment it invents
+        # fluent text ("You", "maybe be each pec"), and a fabricated bubble is
+        # worse than a missing one.
+        if no_speech and float(np.mean(no_speech)) > MAX_NO_SPEECH_PROB:
+            log.debug("asr: model reports no speech (p=%.2f) — dropping %r", float(np.mean(no_speech)), text[:40])
             return None
 
         confidence = 0.0

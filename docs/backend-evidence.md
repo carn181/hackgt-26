@@ -85,7 +85,22 @@ white noise → `Static` 0.738; pink noise → `Noise` 0.918; real speech → **
 |---|---|---|
 | YAMNet (`ai-edge-litert`, XNNPACK CPU) | **5.65 ms mean** per 0.975 s window (min 5.53, max 5.81, 50 runs) | first run carries XNNPACK warm-up (7.4 ms) |
 | GCC-PHAT + coherence, 4096-sample window | ~8 ms | 2 mics × 6 sub-bands |
-| Whisper `base.en`, int8, CPU | **1.2 s** per 2.78 s utterance (**0.43× realtime**) | a 12.4 s live segment cost 14.4 s → ASR input is capped at `ASR_MAX_SECONDS = 10` |
+| Whisper `base.en`, int8, CPU, **4 threads** | **0.76 s** per 6.0 s clip (RTF 0.13) | 2 threads 1.39 s, 8 threads 0.81 s — 4 is the knee on this 16-core box |
+| Whisper, default thread count, on 10 s of *noise* | 11.9 s | why the input is now capped at 6 s and gated |
+
+**What Whisper costs the pipeline (measured).** It never blocked classification — the ASR worker is a
+separate thread and the onset→event latency stayed at p50 391 ms *while* a 10 s decode ran. What it
+did cost: 11.9 s of CPU per long segment, a machine that was audibly busy, and **fabricated captions**
+from room noise (`'You'`, `'maybe be each pec'`). Four gates now stand in front of it: the class must
+be in the speech family, `confidence ≥ 0.35`, segment `snr_db ≥ 15`, input capped at 6 s, and
+Whisper's own `no_speech_prob` must average below 0.6 — the last one is the real anti-hallucination
+guard, since the model will happily invent fluent text for noise.
+
+**Classification latency.** The deliberate `--classify-tail` wait was 0.35 s and is now **0.20 s**:
+the synthetic end-to-end check reports the same class and bearing with `onset→msg` **200 ms**
+(down from 360 ms), because YAMNet is insensitive to where a transient sits inside its fixed window.
+The flag is still there to trade back: if a real clap reads badly on the hat, `--classify-tail 0.35`
+costs 150 ms and restores the older window placement.
 
 ---
 
@@ -97,39 +112,57 @@ backend on `--profile laptop_dmic --source pw`, sounds played through the speake
 because "the latency" is otherwise ambiguous:
 
 ```
-ping echo RTT (the HUD's own metric)  n=80 p50=1.3 ms  p95=1.7  p99=2.2  max=2.7
-backend onset→emit                    n=5  p50=378.0   p95=400.4
-emit→client (clock-corrected)         n=5  p50=2.3     p95=12.7
-onset→client  <-- the README's number n=5  p50=378.0   p95=403.4
-play command→client (incl. player)    n=4  p50=1156.4  p95=2107.9
-messages: backend_status 3, array_status 9, timeline 1, ping 80, sound_event 5
-connect 32.8 ms · arrival gap p50 200.8 ms (the 2 s/10 s status cadence plus events)
-stimulus: best event SNR ... -> OK (the run is inconclusive below --require-snr-db, default 12)
+ping echo RTT (the HUD's own metric)  n=120 p50=0.8 ms  p95=1.2  p99=2.2  max=2.7
+backend onset→emit                    n=5  p50=232.0   p95=233.6
+emit→client (clock-corrected)         n=5  p50=2.9     p95=5.3
+onset→client  <-- the README's number n=5  p50=234.0   p95=237.5
+play command→client (incl. player)    n=5  p50=326.6   p95=1212.1
+messages: backend_status 4, array_status 13, timeline 1, ping 120, sound_event 5
+connect 19.9 ms · arrival gap p50 201.1 ms (the 2 s/10 s status cadence plus events)
+stimulus: best event SNR 36.5 dB (need >= 12) -> OK
 ```
 
-- **onset → client p50 378 ms, p95 403 ms** against a 1.5 s budget (README §3).
-- **emit → client p50 2.3 ms, p95 12.7 ms** over loopback with three browser clients attached.
-- **ping RTT 1.3 ms p50** — the same metric the HUD shows in its diagnostics chip (it reported
-  1.3–1.7 ms median from the browser while this ran).
-- Backend-internal breakdown: 350 ms of the 378 ms is the deliberate classification tail
-  (`--classify-tail`, the wait that puts the sound in the middle of YAMNet's 0.975 s window);
+- **onset → client p50 234 ms, p95 238 ms** against a 1.5 s budget (README §3).
+- **emit → client p50 2.9 ms** over loopback with browser clients attached.
+- **ping RTT 0.8 ms p50** — the same metric the HUD shows in its diagnostics chip.
+- The classes are right too: `Telephone 0.80 / 0.89 / 0.85` at SNR 35–36 dB for the played
+  two-tone bursts, and 5 of 6 bursts reached the client (one merged into a neighbouring segment).
+- Backend-internal breakdown: 200 ms is the deliberate `--classify-tail` wait (see below);
   DOA + YAMNet together are ~15 ms.
-- The `play command→client` figure is dominated by `pw-play` process start-up (0.25–2.2 s); it is
-  reported so nobody mistakes it for pipeline cost.
+- The `play command→client` figure is dominated by `pw-play` start-up (0.25–1.2 s); it is reported
+  so nobody mistakes it for pipeline cost. The generated wav has a 1.5 s lead-in for exactly that
+  reason.
 
 The bench validates its own clock handling: the backend/client offset is the min-filtered
 `recv − t`, so `emit→client` excludes the fastest path's one-way delay (sub-ms on loopback) and the
 absolute figures are conservative.
 
-### 3.1 Bug this measurement found
+### 3.1 Three bugs these measurements found
 
-The first bench run reported `onset→emit p50 19 982 ms`, `source.jitter_ms_max 16 303 ms` and
-`rate_est_hz 15 273` (nominal 16 000). Cause: **Whisper was running on the capture thread** — every
-speech-ish event cost ~1.2 s inline, block reads fell behind, and the ring buffer drifted. Fix: ASR
-now runs on a dedicated worker thread with a bounded (4-deep) queue, and the segment audio is sliced
-on the capture thread before queueing (the ring only holds 20 s). After the fix: `rate_est_hz 15 935`,
-`jitter_ms_max 137 ms`, and the numbers above. Any future heavy stage belongs on a worker, not in
-`_consume`.
+**Whisper was running on the capture thread.** The first bench run reported
+`onset→emit p50 19 982 ms`, `source.jitter_ms_max 16 303 ms` and `rate_est_hz 15 273` (nominal
+16 000): every speech-ish event cost ~1.2 s of decode inline, block reads fell behind and the ring
+buffer drifted. ASR now runs on a worker thread with a bounded queue, and the segment audio is
+sliced on the capture thread before queueing (the ring only holds 20 s). After the fix:
+`rate_est_hz 15 935`, `jitter_ms_max 137 ms`.
+
+**The detector's release rule never fired in a live room.** A segment closed only when
+`level < floor + 5 dB`, and a room whose level wanders ±6 dB around a floor estimated from its
+quietest frames never satisfies that — so a segment opened by a room bump stayed open until
+`max_duration`, and **every real sound inside it was absorbed and classified against the room-bump
+window**. Measured symptom: one event every 12 s (exactly `max_duration`), classes `Silence` at
+confidence 0.1–0.5, and a real tone burst logged as `Fart 0.33`. The release level is now
+`max(floor + 5 dB, segment_peak − 12 dB)`: a segment ends when it is quiet *relative to its own
+peak*, which is what a VAD does. Result: the same tone bursts became `Telephone 0.80–0.89` at SNR
+35 dB, 5 of 6 reaching the client, and the event rate became sound-driven instead of
+cap-driven.
+
+**The stimulus itself was silently broken, twice.** `pw-play` needs 0.25–2.2 s to start, so it ate
+the first burst of every file — with one-burst files the microphone heard *nothing* and the run
+"proved" the array was deaf. Generated files now carry a 1.5 s lead-in, the sink is resolved once
+and pinned for the whole run (a default that moves mid-run sends the stimulus somewhere the mic
+cannot hear), and every event's `snr_db` is checked against `--require-snr-db` before the run is
+allowed to count. The tool exits 3 rather than reporting a confident conclusion from silence.
 
 ---
 
@@ -204,13 +237,25 @@ Consequences:
 - The name spotter is verified at module level (`"Hey Sam, are you there?"` → `named=True`); it did
   not fire live because the room's speech does not contain the configured name.
 
-### 4.4 Class-quality caveat
+### 4.4 Class-quality caveat and the overload gates
 
 YAMNet's fixed 0.975 s window dilutes a 30 ms transient, so a *synthetic* click reads
-`Silence`/`Tick` rather than `Clapping`; a real clap recording is the honest test. Two rules were
-added from the live runs: events the classifier calls `Silence` are dropped rather than forwarded
-(`fuse.is_reportable`), and `Synthesizer` was added to the classes that get transcribed — espeak-ng
-lands there, and it is speech.
+`Silence`/`Tick` rather than `Clapping`; a real clap recording is the honest test.
+
+Two problems showed up in a long live run and are now fixed at the source:
+
+1. **The log filled with `Silence`.** A detector working against a −68 dB floor fires on every room
+   bump, and the classifier honestly answers `Silence` (or YAMNet's room-tone class `Inside, small
+   room`) at confidence 0.1–0.5. Those are measurements of nothing, not events. An event is now
+   reported only when its class is not in the no-sound list *and* its segment `snr_db ≥ 12`.
+2. **The terminal and the wire disagreed.** Suppressed events were logged like any other, so the HUD
+   looked broken while the log looked busy. The log line now says `SUPPRESSED`, and the periodic line
+   reports `events sent N, suppressed M` so the ratio is visible at a glance.
+
+A third cause of "the log has events but the HUD shows no markers" is *by design* and stays: an event
+that could not be localized is sent with `source: none`, `accuracy_deg: 180`, `ambiguous: true`, and
+the HUD fades it to nothing rather than drawing a confident lie. On this laptop that is most events
+(§4.2); on the hat they will have positions.
 
 ---
 

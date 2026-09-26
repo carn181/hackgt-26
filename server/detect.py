@@ -59,17 +59,19 @@ class OnsetDetector:
         hop_ms: float = 10.0,
         rise_db: float = 9.0,
         release_db: float = 5.0,
+        release_below_peak_db: float = 12.0,
         floor_tau_s: float = 1.5,
         min_abs_db: float = -58.0,
         refractory_s: float = 0.25,
         hang_s: float = 0.30,
         min_duration_s: float = 0.06,
-        max_duration_s: float = 12.0,
+        max_duration_s: float = 8.0,
     ):
         self.rate = int(rate)
         self.hop = max(1, int(round(rate * hop_ms / 1000.0)))
         self.rise_db = float(rise_db)
         self.release_db = float(release_db)
+        self.release_below_peak_db = float(release_below_peak_db)
         self.min_abs_db = float(min_abs_db)
         self.refractory = int(round(refractory_s * rate))
         self.hang = int(round(hang_s * rate))
@@ -149,10 +151,20 @@ class OnsetDetector:
             return None
 
         # Active: keep the segment open until it has been quiet for `hang`.
+        #
+        # The release level is measured against *both* the room floor and the
+        # segment's own peak. The floor alone is not enough in a live room: a room
+        # whose level wanders ±6 dB around a floor estimated from its quietest
+        # frames never satisfies `db < floor + 5`, so a segment opened by a room
+        # bump stayed open until `max_duration` — measured live, one segment every
+        # 12 s with every real sound inside it absorbed and classified against the
+        # room-bump window. That is what "the log is full of Silence and nothing
+        # reaches the HUD" was.
         act = self._active
         act.peak_db = max(act.peak_db, db)
         act.snr_db = max(act.snr_db, db - self._floor_db)
-        if db < self._floor_db + self.release_db:
+        release = max(self._floor_db + self.release_db, act.peak_db - self.release_below_peak_db)
+        if db < release:
             if self._below_since is None:
                 self._below_since = frame_start
             elif frame_start - self._below_since >= self.hang:

@@ -38,9 +38,12 @@ log = logging.getLogger("server.fuse")
 # YAMNet's fixed window (README §8.2) — 0.975 s at 16 kHz.
 CLASSIFY_WINDOW = 15600
 # How much of that window we let the sound occupy before classifying. The onset
-# is placed near the *centre* so a 0.35 s wait already yields a window that is
-# mostly signal; waiting for the full window would cost ~1 s of latency.
-DEFAULT_TAIL_S = 0.35
+# is placed near the *centre* so a short wait already yields a window that is
+# mostly signal; waiting for the full window would cost ~1 s of latency. 0.20 s
+# measured out as the sweet spot: onset→event ~240 ms, and the class is unchanged
+# on the synthetic end-to-end check (YAMNet is insensitive to where a transient
+# sits inside its fixed window).
+DEFAULT_TAIL_S = 0.20
 # Short window for the bearing. It ends *after* the onset so it contains the
 # transient and the beginning of the sustain — a window that stops at the onset is
 # mostly silence, and PHAT on silence is noise. 256 ms at 16 kHz.
@@ -60,13 +63,37 @@ HALF_SPACE_TOL_DEG = 35.0
 # is on the class *family*, not on the literal word.
 _SPEECHY = ("speech", "conversation", "narration", "child speech", "singing", "whisper", "synthesizer")
 # A detector that fires on a loud room occasionally hands us something the
-# classifier calls silence. Reporting "Silence" as a sound event is noise in the
-# HUD (SoundWatch's overload finding), and the class itself says the event is
-# empty — so it is dropped rather than forwarded.
-_NON_EVENTS = ("silence",)
-# Longest audio handed to the transcriber. A 12 s music/room segment costs ~14 s
-# of CPU at int8 (measured); beyond this the tail is not worth the worker's time.
-ASR_MAX_SECONDS = 10.0
+# classifier calls silence, and YAMNet also has "room tone" classes that describe
+# a place rather than a sound. Reporting those is noise in the HUD (SoundWatch's
+# overload finding) and the class itself says the event is empty — so they are
+# dropped rather than forwarded.
+_NON_EVENTS = (
+    "silence",
+    "inside, small room",
+    "inside, large room or hall",
+    "outside, urban or rural",
+    "static",
+    "noise",
+    "white noise",
+    "pink noise",
+)
+# Minimum segment SNR for an event to be worth reporting at all. The detector's
+# own floor is ~-68 dB here and room bumps clear 9 dB above it, which is how the
+# log filled up with "Silence" events at confidence 0.1-0.5.
+MIN_EVENT_SNR_DB = 12.0
+# Below this top-class score the label is a guess (a chair creak reads "Fart" or
+# "Horse"), and the project's rule is that a wrong label is worse than none. Real
+# speech in this room measures 0.41-0.50, a speaker-played tone 0.89-0.94, so the
+# floor costs nothing that would have been displayed anyway: the HUD fades a
+# marker by confidence, and `urgency_for` already downgrades below 0.35.
+MIN_EVENT_CONFIDENCE = 0.30
+# A transcript is only attempted when the event looks like real speech: the class
+# must be in the speech family *and* the segment must be clean and confident.
+MIN_SPEECH_CONFIDENCE = 0.35
+MIN_SPEECH_SNR_DB = 15.0
+# Longest audio handed to the transcriber. Measured: a 10 s segment cost 11.9 s of
+# CPU at int8, and long segments are usually room noise rather than one utterance.
+ASR_MAX_SECONDS = 6.0
 
 
 @dataclass
@@ -96,6 +123,7 @@ class FusionEngine:
         names: tuple[str, ...] = (),
         mode: str = "all",
         classify_tail_s: float = DEFAULT_TAIL_S,
+        min_confidence: float = MIN_EVENT_CONFIDENCE,
     ):
         self.prof = prof
         self.rate = int(rate or prof.rate_hz)
@@ -106,6 +134,7 @@ class FusionEngine:
         self.names = tuple(names)
         self.mode = mode
         self.classify_tail_s = float(classify_tail_s)
+        self.min_confidence = float(min_confidence)
         self._eid = 0
         self._sid = 0
         self._by_id: OrderedDict[str, dict] = OrderedDict()
@@ -276,12 +305,28 @@ class FusionEngine:
         self.latencies_ms.append((t_now - t_onset) * 1e3)
         return msg, seg
 
-    def is_reportable(self, cls: str) -> bool:
-        """False for classes that describe the absence of a sound."""
-        return cls.strip().lower() not in _NON_EVENTS
+    def is_reportable(self, msg: dict) -> bool:
+        """False for classes that describe no sound, and for weak segments.
 
-    def wants_speech(self, cls: str, duration_s: float) -> bool:
+        The SNR and confidence gates are the ones that matter in practice: a
+        detector working against a -68 dB floor fires on every room bump, and the
+        classifier answers "Silence" or a guess like "Horse" at low confidence.
+        That is a real measurement of nothing, not an event. Anything dropped here
+        is logged as suppressed so the terminal and the wire agree.
+        """
+        if str(msg.get("class", "")).strip().lower() in _NON_EVENTS:
+            return False
+        if float(msg.get("confidence", 1.0)) < self.min_confidence:
+            return False
+        snr = msg.get("snr_db")
+        return not (isinstance(snr, (int, float)) and snr < MIN_EVENT_SNR_DB)
+
+    def wants_speech(self, cls: str, duration_s: float, confidence: float = 1.0, snr_db: float | None = None) -> bool:
         if duration_s < 0.30:
+            return False
+        if confidence < MIN_SPEECH_CONFIDENCE:
+            return False
+        if snr_db is not None and snr_db < MIN_SPEECH_SNR_DB:
             return False
         low = cls.lower()
         return any(s in low for s in _SPEECHY)
