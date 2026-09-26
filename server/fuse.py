@@ -100,13 +100,18 @@ DROP_CLASSES: tuple[str, ...] = ()
 MIN_RECLASSIFY_CONFIDENCE = 0.40
 # Longest window taken for the loudest-window re-classification.
 RECLASSIFY_SPAN_S = 0.975
-# A transcript is only attempted when the event looks like real speech: the class
-# must be in the speech family. The confidence/SNR gates are off by default for the
-# same reason as the event gates above (they were tuned against a faulty mic); the
-# anti-fabrication guard that *stays* is Whisper's own `no_speech_prob` in asr.py,
-# because an invented caption is worse than a missing one.
-MIN_SPEECH_CONFIDENCE = 0.0
-MIN_SPEECH_SNR_DB = 0.0
+# A transcript is only attempted when the event looks like real speech. These
+# gates are about the *transcriber*, not about what the HUD shows: with them off
+# (an earlier revision) every speech-ish segment — including room noise the
+# classifier guessed at — went to Whisper, the bounded queue saturated, and the
+# log filled with `asr backlog: dropped a queued segment` while captions arrived
+# 15 s late. Measured on a busy box: a 0.83 s clip cost 7.7 s of decode, because
+# Whisper pads every input to 30 s.
+MIN_SPEECH_CONFIDENCE = 0.25
+MIN_SPEECH_SNR_DB = 8.0
+# A transcript older than this is not worth producing: the moment has passed, and
+# the queue is better spent on the sound happening now.
+ASR_MAX_AGE_S = 3.0
 # Longest audio handed to the transcriber. Measured: a 10 s segment cost 11.9 s of
 # CPU at int8, and long segments are usually room noise rather than one utterance.
 ASR_MAX_SECONDS = 6.0
@@ -268,7 +273,7 @@ class FusionEngine:
         )
         sig = self.sounding_signal(window, bearing if source != "none" else None, source)
         if self.ml is not None:
-            top = self.ml.top(sig, k=3)
+            top = self.ml.top(sig, k=5)
             cls, conf = (top[0][0], float(top[0][1])) if top else ("unknown", 0.0)
             alt = [{"class": n, "confidence": round(float(s), 3)} for n, s in top[1:]]
         else:
@@ -350,7 +355,7 @@ class FusionEngine:
         if self.ml is None or window.shape[1] < int(0.05 * self.rate):
             return None
         sig = self.sounding_signal(window, bearing_deg, seg.msg.get("source", "none"))
-        top = self.ml.top(sig, k=3)
+        top = self.ml.top(sig, k=5)
         if not top:
             return None
         cls, conf = top[0][0], float(top[0][1])

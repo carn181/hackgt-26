@@ -39,6 +39,7 @@ from .calib_fit import SpacingFit
 from .config import available_profiles, load_profile, write_profile_spacing
 from .detect import Onset, OnsetDetector, Offset
 from .fuse import (
+    ASR_MAX_AGE_S,
     ASR_MAX_SECONDS,
     CLASSIFY_WINDOW,
     DEFAULT_TAIL_S,
@@ -165,8 +166,11 @@ class Backend:
             min_snr_db=args.min_snr_db,
         )
         self.transcriber = None
-        self._asr_q: queue.Queue = queue.Queue(maxsize=4)
+        # Two deep on purpose: a transcript that is more than one segment behind
+        # the present is already stale (see ASR_MAX_AGE_S).
+        self._asr_q: queue.Queue = queue.Queue(maxsize=2)
         self._asr_thread: threading.Thread | None = None
+        self._asr_dropped = 0
 
     # -- setup -------------------------------------------------------------
     def load_models(self) -> None:
@@ -468,21 +472,28 @@ class Backend:
             else delay_and_sum(data, self.prof, seg.bearing_deg, rate)
         )
         item = (seg, sig, self._t_now())
-        try:
-            self._asr_q.put_nowait(item)
-        except queue.Full:
-            # A backlog of transcripts is worthless in real time: drop the oldest.
+        if self._asr_q.full():
+            # Freshness beats completeness: drop the oldest rather than refuse the
+            # sound that is happening now.
             with contextlib.suppress(queue.Empty):
                 self._asr_q.get_nowait()
-            with contextlib.suppress(queue.Full):
-                self._asr_q.put_nowait(item)
-            log.warning("asr backlog: dropped a queued segment")
+            self._asr_dropped += 1
+            log.info("asr: queue full (%d deep), dropped the oldest queued segment", self._asr_q.qsize())
+        with contextlib.suppress(queue.Full):
+            self._asr_q.put_nowait(item)
 
     def _asr_worker(self) -> None:
         while not self._stop:
             try:
                 seg, sig, t_enqueue = self._asr_q.get(timeout=0.25)
             except queue.Empty:
+                continue
+            age = self._t_now() - t_enqueue
+            if age > ASR_MAX_AGE_S:
+                # A caption for a sound three seconds gone is worse than none: it
+                # arrives after the wearer has already looked. Measured live: with
+                # the queue saturated, transcripts landed 15 s late.
+                log.info("asr: skipped a %.1fs-old segment (queue was %d deep)", age, self._asr_q.qsize())
                 continue
             try:
                 t0 = time.monotonic()
@@ -492,8 +503,8 @@ class Backend:
                         self.hub.publish(msg)
                 if msgs:
                     log.info(
-                        "asr %.2fs audio in %.0f ms (segment ended %.1fs ago)",
-                        len(sig) / self.rate, (time.monotonic() - t0) * 1e3, self._t_now() - t_enqueue,
+                        "asr %.2fs audio in %.0f ms (queued %.1fs, %d still waiting)",
+                        len(sig) / self.rate, (time.monotonic() - t0) * 1e3, age, self._asr_q.qsize(),
                     )
             except Exception:
                 log.exception("asr worker failed")
@@ -502,15 +513,21 @@ class Backend:
         if not self.args.print_events:
             return
         note = "" if sent else "  SUPPRESSED"
-        # Runner-up classes are printed because "a clap reads as Fart" is only
-        # answerable if you can see whether `Clapping` was a close second.
+        # The runner-up classes and their probabilities are printed because the
+        # top-1 alone cannot answer "was `Clapping` close?" — the scores are
+        # YAMNet's own softmax outputs for this window.
         alts = msg.get("alternatives") or []
-        alt = "  alt: " + ", ".join(f"{a['class']} {a['confidence']:.2f}" for a in alts[:2]) if alts else ""
+        want = max(0, int(getattr(self.args, "log_classes", 3)) - 1)
+        top = " · ".join(
+            [f"{msg['class']} {msg['confidence'] * 100:.0f}%"]
+            + [f"{a['class']} {a['confidence'] * 100:.0f}%" for a in alts[:want]]
+        )
         print(
             f"[{t_now:7.2f}s] {msg['class']:<22} {msg['confidence']:.2f} "
             f"{msg['bearing_deg']:+6.1f}° ±{msg['accuracy_deg']:.0f}° "
             f"{'AMBIG' if msg['ambiguous'] else '     '} {msg['urgency']:<6} {msg['source']:<12} "
-            f"snr {float(msg.get('snr_db', 0)):5.1f} dB  onset→ws {(t_now - t_onset) * 1e3:5.0f} ms{note}{alt}",
+            f"snr {float(msg.get('snr_db', 0)):5.1f} dB  onset→ws {(t_now - t_onset) * 1e3:5.0f} ms{note}\n"
+            f"{'':>11}top: {top}",
             flush=True,
         )
         n = len(self.fusion.latencies_ms)
@@ -593,13 +610,13 @@ class Backend:
     def on_vision(self, faces: list[dict]) -> None:
         self.vision.observe(faces, self._t_now())
 
-    def on_audio(self, msg: dict) -> None:
+    def on_audio(self, msg: dict, client_id: int | None = None) -> None:
         """§4.6 `audio`: the browser is the microphone (see `BrowserSource`)."""
         frame = decode_audio_frame(msg, self)
         if frame is None:
             return
         samples, seq, t_client = frame
-        self.source.push(samples, seq, t_client)
+        self.source.push(samples, seq, t_client, client_id)
 
     def on_mode(self, mode: str) -> None:
         if mode in MODE_BY_NAME:
@@ -661,6 +678,13 @@ def create_app(backend: Backend) -> FastAPI:
                 "peak_db": round(backend.detector.peak_db, 1),
                 "samples": backend.detector.n,
             },
+            # "Why is transcription slow": queue depth is the backlog, `dropped`
+            # counts segments discarded for being stale.
+            "asr": {
+                "reason": backend.transcriber.reason if backend.transcriber else "off",
+                "queue": backend._asr_q.qsize(),
+                "dropped": backend._asr_dropped,
+            },
         }
 
     @app.websocket("/ws")
@@ -678,7 +702,7 @@ def create_app(backend: Backend) -> FastAPI:
             try:
                 while True:
                     raw = await ws.receive_text()
-                    await _handle_client_message(backend, raw, ws)
+                    await _handle_client_message(backend, raw, ws, cid)
             finally:
                 sender.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -687,6 +711,10 @@ def create_app(backend: Backend) -> FastAPI:
             pass
         finally:
             backend.hub.detach(cid)
+            # If this client was the microphone, hand it to whoever is next.
+            release = getattr(backend.source, "release", None)
+            if callable(release):
+                release(cid)
             log.info("client disconnected (%d open)", len(backend.hub.clients))
 
     return app
@@ -701,7 +729,7 @@ async def _pump(q: asyncio.Queue, ws: WebSocket) -> None:
         return
 
 
-async def _handle_client_message(backend: Backend, raw: str, ws: WebSocket) -> None:
+async def _handle_client_message(backend: Backend, raw: str, ws: WebSocket, client_id: int | None = None) -> None:
     try:
         msg = json.loads(raw)
     except json.JSONDecodeError:
@@ -727,7 +755,7 @@ async def _handle_client_message(backend: Backend, raw: str, ws: WebSocket) -> N
         if isinstance(faces, list):
             backend.on_vision(faces)
     elif kind == "audio":
-        backend.on_audio(msg)
+        backend.on_audio(msg, client_id)
 
 
 def decode_audio_frame(msg: dict, backend: Backend) -> tuple[np.ndarray, int | None, float | None] | None:
@@ -801,6 +829,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="drop events whose top class scores below this (default 0 = report everything)")
     p.add_argument("--min-snr-db", type=float, default=MIN_EVENT_SNR_DB,
                    help="drop events whose segment SNR is below this dB (default 0 = report everything)")
+    p.add_argument("--log-classes", type=int, default=3,
+                   help="how many class probabilities to print per event in the log")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--ws-port", type=int, default=8000)
     p.add_argument("--mode", default="all", choices=["all", "important", "quiet"])

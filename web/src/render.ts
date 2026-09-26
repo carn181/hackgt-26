@@ -53,9 +53,28 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasEle
 
   const visible = state.visibleEvents();
   const visibleIds = new Set(visible.map((ev) => ev.id));
+  // Localized events get an arrow at their bearing; the rest get a caption. Two
+  // sounds sharing a bearing stack vertically instead of drawing on top of each
+  // other, and a sound with no direction (`source: "none"`, ±180°) is never drawn
+  // at 0° — on the phone/laptop path most events are unlocalized, which is what
+  // made a column of arrows pile up in the middle of the screen.
+  const placed: { x: number; stack: number }[] = [];
+  const unlocated: TrackedEvent[] = [];
   for (const ev of visible) {
-    drawEventMarker(ctx, size, ev, calib, state);
+    if (ev.source === "none" || ev.accuracy_deg >= 180) {
+      unlocated.push(ev);
+      continue;
+    }
+    const x = bearingToScreenX(ev.renderBearing, calib);
+    let stack = 0;
+    if (x !== null) {
+      const px = x * size.w;
+      while (placed.some((p) => Math.abs(p.x - px) < 40 && p.stack === stack)) stack++;
+      placed.push({ x: px, stack });
+    }
+    drawEventMarker(ctx, size, ev, calib, state, stack * 30);
   }
+  if (unlocated.length) drawUnlocatedList(ctx, size, unlocated, state);
 
   for (const [speechId, s] of state.speech) {
     if (!visibleIds.has(s.parent_event)) continue;
@@ -141,7 +160,8 @@ function drawEventMarker(
   size: Size,
   ev: TrackedEvent,
   calib: Calibration,
-  state: HudState
+  state: HudState,
+  stackOffsetY = 0
 ) {
   const age = state.eventAge(ev);
   if (age <= 0) return;
@@ -154,8 +174,52 @@ function drawEventMarker(
     // otherwise draw on top of each other; offset the second vertically so
     // "two mirrored candidates" stays visually true even then.
     const edgeOffsetY = ev.ambiguous && i === 1 ? 34 : 0;
-    drawOneMarker(ctx, size, bearing, calib, color, baseAlpha, ev, ev.ambiguous, edgeOffsetY);
+    drawOneMarker(ctx, size, bearing, calib, color, baseAlpha, ev, ev.ambiguous, edgeOffsetY, stackOffsetY);
   });
+}
+
+/**
+ * Unlocalized events, as a compact stack of captions instead of markers: the
+ * class and confidence are real, the direction is unknown, and saying so is the
+ * point. Newest at the bottom, capped so the display cannot become a wall.
+ */
+function drawUnlocatedList(
+  ctx: CanvasRenderingContext2D,
+  size: Size,
+  events: TrackedEvent[],
+  state: HudState
+) {
+  const MAX_ROWS = 5;
+  const rows = events.slice(-MAX_ROWS);
+  const hidden = events.length - rows.length;
+  const lineH = 20;
+  const x = size.w - 14;
+  let y = size.h * HORIZON_FRAC - 30;
+
+  ctx.save();
+  ctx.font = `bold 13px ${PIXEL_FONT}`;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "alphabetic";
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const ev = rows[i];
+    const age = state.eventAge(ev);
+    if (age <= 0) continue;
+    const color = URGENCY_COLOR[ev.urgency];
+    ctx.globalAlpha = age * clamp(ev.confidence, 0.2, 1);
+    outlinedText(
+      ctx,
+      `${ev.class} ${Math.round(ev.confidence * 100)}%  no direction`,
+      x,
+      y,
+      color
+    );
+    y -= lineH;
+  }
+  if (hidden > 0) {
+    ctx.globalAlpha = 0.7;
+    outlinedText(ctx, `+${hidden} more`, x, y, "#9ad");
+  }
+  ctx.restore();
 }
 
 function drawOneMarker(
@@ -167,10 +231,11 @@ function drawOneMarker(
   alpha: number,
   ev: TrackedEvent,
   ambiguous: boolean,
-  edgeOffsetY: number
+  edgeOffsetY: number,
+  stackOffsetY = 0
 ) {
   const xNorm = bearingToScreenX(bearingDeg, calib);
-  const y = size.h * HORIZON_FRAC;
+  const y = size.h * HORIZON_FRAC - stackOffsetY;
   const edgeY = y + edgeOffsetY;
   const label = `${ev.class} ${Math.round(ev.confidence * 100)}%  ±${Math.round(ev.accuracy_deg)}°`;
   const pulse = ev.urgency === "urgent" ? 1 + 0.15 * Math.sin(performance.now() / 120) : 1;

@@ -615,6 +615,8 @@ class BrowserSource(_BaseSource):
         self.last_frame_mono = 0.0
         self.last_client_t: float | None = None
         self.silence_samples = 0
+        self._owner: int | None = None
+        self.rejected_other_client = 0
         self._expected_mono: float | None = None
         self._next_warn = 0.0
         self._bad: dict[str, int] = {}
@@ -634,10 +636,37 @@ class BrowserSource(_BaseSource):
             self._next_warn = now + 5.0
             log.warning("browser source: rejected frame (%s), %d so far", reason, self._bad[reason])
 
-    def push(self, samples: np.ndarray, seq: int | None = None, t_client: float | None = None) -> None:
-        """Queue one frame of (nch, n) float32 −1..1. Called from the WS handler."""
+    def push(
+        self,
+        samples: np.ndarray,
+        seq: int | None = None,
+        t_client: float | None = None,
+        client_id: int | None = None,
+    ) -> None:
+        """Queue one frame of (nch, n) float32 −1..1. Called from the WS handler.
+
+        **One client is the microphone at a time.** Two pages streaming at once
+        interleave their rooms into one stream — the classifier then hears a
+        mixture of two places, and the sequence counters fight each other (observed
+        live as a flood of `seq gap` warnings in both directions). The first client
+        to send a frame owns the source until it disconnects.
+        """
         n = samples.shape[1]
         if n == 0:
+            return
+        if self._owner is None:
+            self._owner = client_id
+            log.info("browser source: client %s is now the microphone", client_id)
+        elif client_id != self._owner:
+            self.rejected_other_client += 1
+            now = time.monotonic()
+            if now > self._next_warn:
+                self._next_warn = now + 10.0
+                log.warning(
+                    "browser source: client %s is already the microphone — ignoring frames from %s "
+                    "(%d ignored so far). Run the backend with --source pw for two independent inputs.",
+                    self._owner, client_id, self.rejected_other_client,
+                )
             return
         now = time.monotonic()
         blk = Block(t_us=self._stamp(now, n), seq=int(seq) if seq is not None else self.frames, x=samples)
@@ -650,7 +679,7 @@ class BrowserSource(_BaseSource):
             with contextlib.suppress(queue.Full):
                 self._q.put_nowait(blk)
         if seq is not None:
-            # A browser restarts `seq` at 0 for every connection; without this a
+            # A page restarts `seq` at 0 for every connection; without this a
             # reconnect is counted as a 4-billion-frame gap.
             if int(seq) == 0:
                 self._next_seq = None
@@ -662,6 +691,13 @@ class BrowserSource(_BaseSource):
             self.stats.start_mono = now
         self.last_frame_mono = now
         self.last_client_t = t_client
+
+    def release(self, client_id: int | None) -> None:
+        """The owning client disconnected: let the next one become the microphone."""
+        if client_id is not None and client_id == self._owner:
+            log.info("browser source: client %s released the microphone", client_id)
+            self._owner = None
+            self._next_seq = None
 
     def blocks(self) -> Iterator[Block]:
         """Yield frames, inserting silence for any gap.
@@ -711,6 +747,8 @@ class BrowserSource(_BaseSource):
             "frames": self.frames,
             "queue_dropped": self.dropped,
             "silence_filled_s": round(self.silence_samples / self.rate, 2),
+            "owner": self._owner,
+            "rejected_other_client": self.rejected_other_client,
         }
 
 
