@@ -25,6 +25,80 @@ overlay (bearing marker, class label, speech bubbles anchored to faces) on a pho
 
 ---
 
+## 0. Progress checklist
+
+Owners: **A = `@____` (hat/ESP32) · B = `@____` (backend/models) · C = `@____` (frontend) · D = `@____` (integration)** — fill names in once.
+
+**How this gets updated (agents: read before touching this file)**
+1. Check a box **only after** you have run the evidence command and seen the expected result.
+2. When checking, append your owner letter and time: `- [x] A2 … — A, 12:40`.
+3. **Never uncheck, reword, or reorder another owner's item.** Append new items only at the end of your own section.
+4. Dropped task → strike it and say why: `- [x] ~~A9 printed bar~~ — dropped: perfboard carrier is enough`.
+5. Raw evidence (command + output) goes in `docs/`, not here. One item = one verifiable outcome.
+
+Unchecked P0 items at the 04:00 acceptance run decide what the video is allowed to claim.
+
+### A — Hat / ESP32
+- [ ] A1 PlatformIO builds and flashes the S3 — evidence: serial boot line
+- [ ] A2 **One bus, two mics** streaming per-channel RMS @10 Hz, both channels non-zero — evidence: serial log
+- [ ] A3 Four mics on two buses enumerate, all four channels non-zero
+- [ ] A4 Sample scaling correct (`>>16` of the 32-bit slot): silence ≈ tens of LSB, speech ≈ hundreds–thousands, no DC ramp — evidence: RMS log
+- [ ] A5 Packetizer emits §4.2 packets at 50 pps/ch; `tools/udp_sniff.py` shows `magic=0xA14D`, `nch=4`, seq gaps < 0.1 %
+- [ ] A6 **USB-CDC transport** streams the same packets (Expo insurance path) — evidence: sniff over serial
+- [ ] A7 Telemetry @2 Hz with `rssi`, `dropped`, `pir`, `sonar_cm`
+- [ ] A8 LED strip: lit position/hue equals commanded bearing within one frame
+- [ ] A9 Hat assembled: bar straight, ports facing away from head, ≥5 mm standoff, strain relief, power bank balanced — evidence: photo in `docs/`
+- [ ] A10 **Clap sign-flip test passes** (left vs right delays flip sign) — evidence: plot in `docs/`
+- [ ] A11 Battery life ≥ 2 h while streaming both transports — evidence: measured
+- [ ] A12 `esp32/HAT.md` committed: wiring map (bus→mic→SEL), pin assignments, known quirks
+
+### B — Backend / models
+- [ ] B1 Model fetched, sizes match §8.1 — evidence: `ls -l models/`
+- [ ] B2 `server/classify.py` implements the §8.2 API; startup logs path + sha256 + class count
+- [ ] B3 §8.2 reproduction checks pass (sine → `Sine wave` ≈0.89, noise → not `Speech`, real speech > 0.7) — evidence: selftest output
+- [ ] B4 Inference time recorded in `docs/`
+- [ ] B5 `tools/udp_sniff.py` exists and prints packet stats (this unblocks A's A5)
+- [ ] B6 `server/ingest.py` reads UDP **and** serial into per-channel ring buffers; exposes seq-gap stats
+- [ ] B7 GCC-PHAT on synthetic data within ±8° at −60/−30/0/+30/+60 — evidence: error table
+- [ ] B8 SRP-PHAT on live audio; `accuracy_deg` from measured spread; `ambiguous` flag set on 1-D ambiguity
+- [ ] B9 `backend_status` emitted on client connect + every 10 s with model sha256 + git rev
+- [ ] B10 Clap reaches a WS client as `sound_event` in < 1.5 s **with correct left/right sign**
+- [ ] B11 `speech` message within 2 s of an utterance, text matches; name spotter works
+- [ ] B12 Channel choice documented in code (P0 mid-pair → P1 steered beam); never a raw 4-ch sum
+- [ ] B13 `requirements.txt` installs clean into a **fresh** venv on a second machine — evidence: install log
+
+### C — Frontend HUD
+- [ ] C1 App runs, camera opens, WS connects, `backend_status` (model + transport) rendered
+- [ ] C2 Compass + markers render correctly from **fake events** (works before the backend is live)
+- [ ] C3 Marker lands within ±10 % frame width for claps at −40°/0°/+40°
+- [ ] C4 Edge chevrons when |bearing| > fov/2; `ambiguous:true` renders two mirrored candidates
+- [ ] C5 Face landmarks + mouth-open state; bubble anchored to the speaking face
+- [ ] C6 Playback-vs-person: loudspeaker speech → marker with **no** face anchor, labelled playback
+- [ ] C7 Urgency tiers: `urgent` displaces other content; `set_mode` all/important/quiet works
+- [ ] C8 60 fps with camera running; added latency < 50 ms — evidence: measured number in `docs/`
+- [ ] C9 Positions interpolate (no snapping); markers age and fade
+
+### D — Integration, deliverables, gates
+- [ ] D1 `docs/calibration.md` started with raw finger-to-keyboard logs
+- [ ] D2 `config/calib.json` filled: spacing, inter-bus offset, head yaw, audio delay
+- [ ] D3 Accuracy sweep done (−90…+90° step 15°, 5 trials): mean error + 1σ per bin
+- [ ] D4 30-minute drift check recorded (t0 vs t+30 inter-bus offset)
+- [ ] D5 04:00 full acceptance run: every P0 item above re-run and green
+- [ ] D6 05:00 code freeze — tag `freeze`, no commits after except `docs/`
+- [ ] D7 2-minute video recorded, six demo beats (§10), strip-only shot included
+- [ ] D8 Devpost submitted: prior-art citation, accuracy curve, Notability screenshots, Create-X flag
+- [ ] D9 Expo kit packed: charged power banks, USB tether, spare mic + wires, printed one-pager
+- [ ] D10 Track chosen and stated in the submission (**Shipyard / Social Good / Lighthouse** — pick one)
+
+### Hard gates (any owner may check these)
+- [ ] G1 14:30 — decision made: printed parts in scope or not (CAD exists if yes)
+- [ ] G2 18:00 — clap sign-flip passed (A10); if not, §9 cut order executes
+- [ ] G3 01:00 — accuracy curve exists; if not, write-up claims only what is measured
+- [ ] G4 04:00 — acceptance run; unchecked P0 items get cut from the video script
+- [ ] G5 05:00 — freeze; 06:00 — video rendering; 08:00 — submitted
+
+---
+
 ## 1. What we are building and why it isn't the 42nd version of this
 
 The category ("sound awareness for DHH users") is well populated — see §11. Two prior projects explicitly left
@@ -240,6 +314,10 @@ require a README edit in the same commit; `main` must stay runnable.
 
 > Scaffolding dirs are empty. Every script or module named below **does not exist yet — writing it is the
 > deliverable**. Don't go looking for it.
+>
+> When one of your acceptance criteria passes, tick the matching box in **§0** with your owner letter and the
+> time (`- [x] B7 … — B, 13:20`). That checklist is how the team knows what is real; keep it honest — an
+> unticked box is worth more than a false one at 04:00.
 
 ### 6.1 Agent brief — ESP32 / hardware (member A)
 
