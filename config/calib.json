@@ -1,0 +1,18 @@
+{
+  "_comment": "Fill during calibration (README 7.2). Never guess these numbers - they ARE the claim.",
+  "measured_at": null,
+  "spacing_m": null,
+  "baseline_m": null,
+  "inter_bus_offset_samples": [null, null, null, null],
+  "head_yaw_offset_deg": null,
+  "camera_fov_deg": null,
+  "audio_delay_ms": null,
+  "drift_check": {
+    "t0_offset_samples": null,
+    "t_plus_30min_offset_samples": null
+  },
+  "accuracy_sweep": {
+    "_format": "bearing_deg: {mean_err_deg, sigma_deg, n}",
+    "entries": {}
+  }
+}

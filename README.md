@@ -1,97 +1,136 @@
-# hackgt-26 — Spatial Sound Awareness HUD
+# hackgt-26 — Wearable Sound-Awareness Cap
 
-A microphone array that finds **where** a sound came from, identifies **what** it is, and renders both
-on a camera HUD — so a d/Deaf or hard-of-hearing user can see the room's soundscape the way a game
-shows off-screen threats. Speech is transcribed and anchored to the face that produced it.
+A cap with a 4-microphone array that finds **where** a sound came from, identifies **what** it is, and shows
+both to a d/Deaf or hard-of-hearing wearer — direction on an LED strip on the brim, and a game-style HUD
+overlay (bearing marker, class label, speech bubbles anchored to faces) on a phone/laptop camera view.
 
-**Status:** scaffolding. Deadline **Sun 2026-09-27 08:00 EDT**. Expo **09:00–11:15**. Code freeze **05:00**.
-Target hardware: ESP32-S3 + 4× INMP441 I2S mics, servo pan stage, PIR, HC-SR04, WS2812 ring.
+**Status: nothing built yet.** Timestamp of this revision: **Sat 2026-09-26 10:35 EDT**.
+
+| Clock | |
+|---|---|
+| Hacking ends / submission deadline | **Sun 2026-09-27 08:00 EDT** (~21 h from this revision) |
+| Expo + judging | Sun 09:00–11:15 |
+| Code freeze | **Sun 05:00** (hard) |
+| Hive (3D print / laser, PI-supervised) | **today 15:00–21:00 — the only window** |
+| Fabrication dependency | **CAD (if any) must exist by 14:30** |
+
+## Hardware on hand
+
+| Part | Notes |
+|---|---|
+| 1× ESP32-S3 (+ 1× ESP32-C3 spare) | **Use the S3**: 4 mics need **2 I2S buses** (2 channels each). The C3 has one I2S port → 2 mics max. |
+| **4× Adafruit ICS-43434 I2S mic breakouts** (PID 6049) | 1.6–3.6 V, 24-bit, bottom-ported, `SEL` pin picks L/R |
+| Servo, PIR (HC-SR501), HC-SR04, WS2812 ring/strip, OLED | optional / stretch |
+| Fifine lav (single TX) | **not part of the array** — wireless AGC + unknown latency ruin TDOA. Wearable-comparison prop only. |
 
 ---
 
 ## 1. What we are building and why it isn't the 42nd version of this
 
-The category ("sound awareness for DHH users") is well populated — see §11. Two prior projects explicitly
-left our core claim as *future work*:
+The category ("sound awareness for DHH users") is well populated — see §11. Two prior projects explicitly left
+our core claim as *future work*:
 
-- **echoAI** (Qualcomm × LiteRT): *"our array consisted of a 1D line of closely spaced microphones… impossible to
-  achieve greater than 1D localization"*; plans DOA + external mic arrays.
+- **echoAI** (Qualcomm × LiteRT): *"our array consisted of a 1D line of closely spaced microphones… impossible
+  to achieve greater than 1D localization."*
 - **Low-latency Sound Disambiguator** (UB Hacking 2025): *"3D Spatial Localization: upgrade from 2D to full 3D
   using 3-4 microphone arrays with multilateration."*
 
+One prior project is architecturally close to us: **HearLink** (4× I2S mics on 2 buses + ESP32-S3 + laptop +
+YAMNet + beamforming, in a 3D-printed necklace) — but it is a **desk/necklace device**, not head-worn, and it
+reports no accuracy numbers.
+
 Our delta, in one sentence for the write-up:
 
-> We measure **bearing on real synchronized hardware** (planar array, one sample clock), report a **calibration
-> curve** instead of a claim, resolve the front/back ambiguity by **rotating the array**, and deliver direction
-> through a **physical pointer** as well as a screen — so the system works with no headset and no display.
+> A **head-worn** array in the frame that actually matters (the wearer's own sense of direction), with measured
+> accuracy, front/back resolved by **head rotation and head-shadow spectral cues**, and direction delivered
+> through a **screen-free LED strip** so the wearer does not have to look at anything.
 
-Three things we must therefore do and say explicitly:
-1. Report measured accuracy (play claps at 12 known angles; plot mean error + spread). No hand-waving.
+Three things we must do and say explicitly:
+1. Report **measured** accuracy (claps at known angles, mean error + spread). Not a vibe.
 2. Cite the prior art by name and state what we extend. Judges who know SoundWatch/HoloSound will check.
-3. Ship the physical pointer. It is the only part of this nobody has built.
+3. Ship the **screen-free direction output**. It is the part nobody has built, and it is what makes this a
+   wearable rather than a laptop demo.
 
 ---
 
-## 2. Constraints (do not plan around these being relaxed)
+## 2. Constraints
 
 | Constraint | Value |
 |---|---|
-| Hacking window | Fri 20:00 → **Sun 08:00** (~31 h left at commit time) |
-| Expo / judging | Sun 09:00–11:15, Devpost write-up + 2-minute video |
-| Hive (3D printing / laser) | Sat **15:00–21:00** only — one fabrication window |
 | Submission rule | **One track only**; unlimited sponsor challenges |
-| Track candidates | **Social Good (Aramco)** — accessibility framing, least crowded · **Lighthouse (Immersive)** — if the HUD is the hero |
-| Free sponsor stacks | Notability (2 screenshots in write-up), Create-X (interest flag), SpaceXAI (build in Cursor/Grok) |
-| Not reachable from this project | Visa ($5k), Impiricus ($3k), Meta — those need commerce / HCP / social-product framing |
+| Track candidates (best fit first) | **Shipyard (Hardware)** — a wearable is squarely "smart devices", 1st prize = Meta Ray-Bans per member · **Social Good (Aramco)** — accessibility framing, likely least crowded · **Lighthouse (Immersive)** — only if the HUD is the hero |
+| Free sponsor stacks | Notability (2 screenshots), Create-X (interest flag), SpaceXAI (build in Cursor / Grok Voice) |
+| Unreachable from this project | Visa ($5k), Impiricus ($3k), Meta — wrong domains |
+| Real work left | ~21 h wall, realistically ~15 h after food/sleep. **Scope accordingly (§9 ladder).** |
 
 ---
 
 ## 3. Architecture
 
 ```
-  ┌──────────────┐   4-ch PCM over UDP (:7000)   ┌─────────────────────────┐
-  │  ESP32-S3    │ ─────────────────────────────▶│  backend (laptop)       │
-  │  4× INMP441  │    telemetry JSON   (:7001)   │  • UDP ingest + ringbuf │
-  │  servo pan   │◀───────────────────────────── │  • GCC-PHAT / SRP-PHAT  │
-  │  PIR, sonar  │    servo/led commands (:7002) │  • YAMNet  (class)      │
-  │  WS2812 ring │                               │  • faster-whisper (text)│
-  └──────────────┘                               │  • fusion → events      │
-                                                 └───────────┬─────────────┘
-                                                             │ WebSocket :8000/ws
-                                                             ▼
-                                                 ┌─────────────────────────┐
-                                                 │  web (browser)          │
-                                                 │  • getUserMedia camera  │
-                                                 │  • MediaPipe faces      │
-                                                 │  • HUD overlay + bubbles │
-                                                 └─────────────────────────┘
+   ┌──────────────────────── HAT ────────────────────────┐
+   │  4× ICS-43434  (straight bar, 80 mm spacing)        │
+   │    bus 0: mic0 (SEL=GND, L)  mic1 (SEL=3V3, R)      │
+   │    bus 1: mic2 (SEL=GND, L)  mic3 (SEL=3V3, R)      │
+   │  ESP32-S3 (crown, back)  WS2812 strip on brim       │
+   └───────────┬─────────────────────────────┬───────────┘
+               │ UDP :7000 PCM  (+USB-CDC     │ UDP :7001 telemetry
+               │  fallback, same format)      │ ← :7002 aim/led commands
+               ▼                              ▼
+      ┌──────────────────────────────────────────────────┐
+      │  backend (laptop)                                │
+      │  ingest → ringbuf → GCC-PHAT/SRP-PHAT → bearing   │
+      │  YAMNet → class   faster-whisper → text           │
+      │  fusion → event stream                            │
+      └──────────────────────┬───────────────────────────┘
+                             │ WebSocket :8000/ws
+                             ▼
+      ┌──────────────────────────────────────────────────┐
+      │  web (phone or laptop browser)                   │
+      │  getUserMedia camera + MediaPipe faces           │
+      │  HUD: bearing compass, markers, speech bubbles   │
+      └──────────────────────────────────────────────────┘
 ```
 
-### Latency budget (target ≤ 1.5 s end-to-end)
+### Latency budget (target ≤ 1.5 s)
 
 | Stage | Budget | Measured |
 |---|---|---|
-| Audio window (TDOA 0.1–0.3 s; YAMNet 0.975 s) | 1.0 s | — |
-| Hop / decision cadence | 0.25 s | — |
-| YAMNet inference | < 50 ms | **2.4–2.9 ms** (verified) |
-| Whisper on a 2–4 s utterance | 0.3–0.8 s | — |
+| TDOA window / YAMNet window | 0.15 s / 0.975 s | — |
+| Decision cadence (hop) | 0.25 s | — |
+| YAMNet inference | < 50 ms | **2.4–2.9 ms** (verified on this laptop) |
+| Whisper (2–4 s utterance) | 0.3–0.8 s | — |
 | WS + render | < 50 ms | — |
+
+### Frame of reference (read this twice)
+
+Bearing is measured **in the hat frame** (0° = the wearer's nose). The camera is **in the hand/phone frame**.
+Those differ. Three ways to handle it, in order of robustness:
+
+1. **LED strip on the brim** — head-locked by construction, no alignment problem, no screen. **This is P0.**
+2. **Phone held in front of the face** — one calibration constant (`head_yaw_offset_deg`) absorbs the
+   difference; good to ~±15°. Fine for the demo, state the caveat honestly.
+3. **Head-mounted display** (Quest passthrough, if one is at the hackathon hardware desk) — camera is
+   head-locked by definition, `yaw_offset = 0`. P2, only if everything else is done.
 
 ---
 
 ## 4. Frozen interfaces
 
-**Do not change these unilaterally.** If a change is required, edit this section in the same commit that
-changes the code, and say so in the commit message — a teammate may be mid-flight against the old shape.
+**Do not change these unilaterally.** If a change is required, edit this section in the same commit that changes
+the code and say so in the commit message — a teammate may be mid-flight against the old shape.
 
-### 4.1 Angle convention (get this wrong and every downstream sign is wrong)
+### 4.1 Angle convention
 
-- `bearing_deg`: **0° = straight ahead of the array** (aligned with the camera's optical axis by calibration).
-- Positive = **clockwise viewed from above** (i.e. toward the user's right). Range `-180 … +180`.
-- `elevation_deg`: `+` up. `null` until the planar array is calibrated for it.
-- `accuracy_deg`: estimated 1-sigma error. Never omit; the HUD fades markers by it.
+- `bearing_deg`: **0° = straight ahead of the hat** (the wearer's nose). Positive = clockwise viewed from
+  above = toward the wearer's right. Range `-180 … +180`.
+- `elevation_deg`: `+` up; `null` until a vertical baseline exists (crown mic — P2).
+- `accuracy_deg`: estimated 1-sigma error, **mandatory**. The HUD fades markers with it.
+- Front/back ambiguity is a property of a linear array. It is resolved by (a) head rotation, (b) HF/LF energy
+  ratio from head shadow, or (c) the camera. Never silently pick a half-space: report `bearing_deg` **and**
+  the ambiguity flag.
 
-### 4.2 ESP32 → backend: audio, UDP `:7000`
+### 4.2 Hat → backend: audio, UDP `:7000` (identical framing over USB-CDC)
 
 Little-endian, one packet = one block for all channels:
 
@@ -99,215 +138,224 @@ Little-endian, one packet = one block for all channels:
 offset  type    field
 0       u16     magic     0xA14D
 2       u8      version   1
-3       u8      nch       number of channels (4)
+3       u8      nch       channels (4)
 4       u32     seq       packet counter, wraps
 8       u64     t_us      ESP32 monotonic microseconds at first sample
-16      u16     nsamp     samples per channel (default 320 = 20 ms)
-18      i16[]   samples   channel-major, nch blocks of nsamp
+16      u16     nsamp     samples per channel (320 = 20 ms)
+18      i16[]   samples   channel-major, nch × nsamp, int16 (top 16 bits of the 24-bit mic word)
 ```
 
-- Rate 16 000 Hz. 320 samples ⇒ 50 packets/s/ch ⇒ 1.0 Mbit/s at 4 ch.
-- No retransmission. Packet loss is expected; `seq` gaps are measured, not fixed.
-- Channels: `0,1` = bus 0 (L/R), `2,3` = bus 1 (L/R). Geometry in `config/array.json`.
+- 16 000 Hz, 320-sample blocks ⇒ 50 packets/s/ch ⇒ ~1.0 Mbit/s at 4 ch.
+- No retransmission. `seq` gaps are measured, not hidden.
+- **Transport is swappable by design:** the same packets go over WiFi UDP or USB serial. At Expo, in a hall
+  with a thousand 2.4 GHz devices, **use USB**.
 
-### 4.3 ESP32 → backend: telemetry, UDP `:7001` (2 Hz, JSON)
+### 4.3 Hat → backend: telemetry, UDP `:7001` (2 Hz, JSON)
 
 ```json
-{"type":"telemetry","t_us":123456789,"rssi":-52,"dropped":3,"servo_deg":-40.0,
- "pir":true,"sonar_cm":214,"temp_c":41.2,"fw":"0.3"}
+{"type":"telemetry","t_us":123456789,"rssi":-52,"dropped":3,"pir":true,"sonar_cm":214,
+ "battery_v":3.9,"cpu_c":41.2,"fw":"0.3","transport":"udp"}
 ```
 
-### 4.4 backend → ESP32: commands, UDP `:7002` (JSON)
+### 4.4 backend → hat: commands, UDP `:7002` (JSON)
 
 ```json
-{"type":"aim","deg":-37.5}        // point the stage / light the ring
-{"type":"scan","from":-150,"to":150,"speed":90}   // deg/s
-{"type":"home"}
-{"type":"led","mode":"direction","deg":-37.5,"hue":210}
+{"type":"led","mode":"direction","deg":-37.5,"hue":210,"urgency":"normal"}
+{"type":"led","mode":"off"}
+{"type":"scan","from":-150,"to":150,"speed":90}
+{"type":"aim","deg":-37.5}
 ```
 
 ### 4.5 backend → frontend: WebSocket `ws://127.0.0.1:8000/ws`
 
-Every message has `type` and `t` (seconds since backend start, monotonic).
+Every message carries `type` and `t` (seconds since backend start, monotonic).
 
 ```json
 {"type":"sound_event","id":"e17","t":12.34,"class":"Speech","confidence":0.91,
- "bearing_deg":-37.5,"elevation_deg":null,"accuracy_deg":12,"urgency":"normal",
- "source":"array","parent_event":null}
+ "bearing_deg":-37.5,"elevation_deg":null,"accuracy_deg":12,"ambiguous":true,
+ "urgency":"normal","source":"array"}
 
 {"type":"speech","id":"s3","t":12.9,"parent_event":"e17","bearing_deg":-35.0,
  "text":"did you see that","partial":false,"confidence":0.78,"lang":"en"}
 
-{"type":"presence","t":12.9,"human":true,"source":"pir","bearing_deg":null}
+{"type":"presence","t":12.9,"human":true,"source":"pir"}
 
 {"type":"array_status","t":13.0,"mics":[{"id":0,"ok":true},{"id":1,"ok":true},
  {"id":2,"ok":false},{"id":3,"ok":true}],
- "calibration":{"baseline_m":0.20,"yaw_offset_deg":0.0,"camera_fov_deg":62.0,
- "audio_delay_ms":18.0}}
+ "calibration":{"baseline_m":0.24,"spacing_m":0.08,"head_yaw_offset_deg":0.0,
+ "camera_fov_deg":62.0,"audio_delay_ms":18.0},"transport":"udp"}
 
-{"type":"timeline","t":20.0,"events":[ /* last N sound_event/speech objects */ ]}
+{"type":"timeline","t":20.0,"events":[ /* recent sound_event / speech objects */ ]}
 ```
 
-`urgency` ∈ `low | normal | high | urgent` (alarm/siren/smoke → `urgent`). The HUD must let `urgent`
-displace anything else on screen — SoundWatch found overload to be the top failure mode.
+`urgency` ∈ `low | normal | high | urgent`; alarm/siren/smoke → `urgent`, and the HUD must let it displace
+everything else (SoundWatch's top finding: **overload is the failure mode**).
 
 ### 4.6 frontend → backend: control, same socket
 
 ```json
-{"type":"set_mode","mode":"all|important|quiet"}   // importance filtering, default "important"
+{"type":"set_mode","mode":"all|important|quiet"}
 {"type":"ping","t":1.0}
 ```
 
-### 4.7 Config file `config/array.json` (single source of truth for geometry)
+### 4.7 `config/array.json` — geometry single source of truth
+
+Straight bar on the brim. Spacing 80 mm ⇒ total baseline 240 mm. Aliasing limit $c/2d$ = **2.1 kHz**
+(better than a 200 mm desk array's 857 Hz); finer spacing costs delay resolution, so don't go below ~60 mm.
 
 ```json
-{"rate_hz":16000,"baseline_m":0.20,"layout":"square",
- "mics":[{"id":0,"bus":0,"lr":"L","x":-0.10,"y":-0.10},
-         {"id":1,"bus":0,"lr":"R","x": 0.10,"y":-0.10},
-         {"id":2,"bus":1,"lr":"L","x": 0.10,"y": 0.10},
-         {"id":3,"bus":1,"lr":"R","x":-0.10,"y": 0.10}],
+{"rate_hz":16000,"layout":"line","spacing_m":0.08,"baseline_m":0.24,
+ "mics":[{"id":0,"bus":0,"lr":"L","x":-0.12,"y":0.0,"z":0.0},
+         {"id":1,"bus":0,"lr":"R","x":-0.04,"y":0.0,"z":0.0},
+         {"id":2,"bus":1,"lr":"L","x": 0.04,"y":0.0,"z":0.0},
+         {"id":3,"bus":1,"lr":"R","x": 0.12,"y":0.0,"z":0.0}],
  "inter_bus_offset_samples":[0,0,0,0],
- "yaw_offset_deg":0.0,"camera_fov_deg":62.0}
+ "head_yaw_offset_deg":0.0,"camera_fov_deg":62.0,"front_half_is":"nose"}
 ```
 
 ---
 
 ## 5. Repo layout and ownership
 
-| Path | Owner | Notes |
+| Path | Owner | Contents |
 |---|---|---|
-| `esp32/` | **Member A** | PlatformIO project; firmware + wiring notes |
-| `server/` | **Member B** | Python: ingest, DOA, models, fusion, WS |
-| `web/` | **Member C** | Vite + TS: camera, HUD, bubbles |
-| `config/` | shared — **A owns edits** | `array.json`, `calib.json` |
-| `docs/` | **Member D / integration** | calibration log, write-up, video script |
-| `models/` | B | gitignored; fetch with §8.2 |
-| `tools/` | shared | throwaway spikes, angle plots |
+| `esp32/` | **A** | PlatformIO firmware; wiring map; `esp32/HAT.md` build notes |
+| `server/` | **B** | UDP/USB ingest, DOA, YAMNet, Whisper, fusion, WS |
+| `web/` | **C** | Vite + TS: camera, HUD, bubbles |
+| `config/` | **A** owns edits | `array.json`, `calib.json` |
+| `docs/` | **D** | calibration log, accuracy curve, write-up, video script |
+| `tools/` | shared | `udp_sniff.py`, angle plots, throwaway spikes |
+| `models/` | B | gitignored; fetch per §8.2 |
 
-Rules for everyone (and for agents):
-- Touch only your globs. Never reformat or "improve" another owner's files.
-- Interfaces in §4 are the contract; a change requires editing §4 in the same commit.
-- No file in `models/` is committed (see `.gitignore`).
-- `main` stays runnable: your branch must not break another stream's entry point.
+Rules for everyone and their agents: touch only your globs; never reformat another owner's files; §4 changes
+require a README edit in the same commit; `main` must stay runnable.
 
 ---
 
 ## 6. Workstream briefs (paste these into your coding agent)
 
-> Directory scaffolding (`esp32/`, `server/`, `web/`, `tools/`, `docs/`, `config/`) is empty. Every script,
-> module and command named in the briefs below (e.g. `tools/udp_sniff.py`, `python -m server.selftest`) **does
-> not exist yet — writing it is part of the deliverable**. Don't go looking for it.
+> Scaffolding dirs are empty. Every script or module named below **does not exist yet — writing it is the
+> deliverable**. Don't go looking for it.
 
-### 6.1 Agent brief — ESP32 / hardware
+### 6.1 Agent brief — ESP32 / hardware (member A)
 
-> You are working in `~/hackgt-26` during a 36-hour hackathon. Read `README.md` §4 and §7 first; they are
-> the frozen contract. You own `esp32/**` and `config/array.json`. You must not modify `server/**`, `web/**`,
-> or the interface shapes in §4.
+> You are in `~/hackgt-26` during a 36-hour hackathon; ~20 h remain. Read §1, §3, §4, §7.1 of `README.md`
+> first — §4 is frozen. You own `esp32/**` and `config/array.json`. Do not touch `server/**`, `web/**`, `models/**`.
 >
-> **Deliverable:** `esp32/` PlatformIO firmware for ESP32-S3 that (1) captures 4× INMP441 mics on two I2S
-> buses at 16 kHz mono per channel, (2) emits the binary packet of §4.2 over UDP to the laptop at 50 Hz per
-> channel, (3) emits telemetry per §4.3 at 2 Hz, (4) accepts commands per §4.4 (servo pan, LED ring, home),
-> (5) reads PIR + HC-SR04 into telemetry.
+> **Deliverable:** PlatformIO firmware for **ESP32-S3** that
+> 1. captures **4× ICS-43434** as two stereo pairs: bus 0 = mics 0/1, bus 1 = mics 2/3, 16 kHz, 32-bit slots;
+> 2. emits the §4.2 packets over **UDP** *and* over **USB-CDC serial** (same bytes, `--transport` build flag) —
+>    the USB path is the Expo insurance policy;
+> 3. emits §4.3 telemetry at 2 Hz; accepts §4.4 LED/scan commands;
+> 4. drives the WS2812 strip so the lit position/hue equals the commanded bearing.
 >
-> **Acceptance (verifiable, in order):**
-> 1. `python3 tools/udp_sniff.py` shows packets with `magic=0xA14D`, `seq` gaps < 0.1 %, 4 channels of sane
->    magnitude (silence ≈ ±10 LSB, talking ≈ ±2000+ LSB).
-> 2. **Clap test:** record the 4 channels, plot 20 ms around the onset. All four must show the clap, and the
->    inter-channel delays must **flip sign** when the clapper moves from the user's left to their right.
->    If the sign doesn't flip, the array geometry or the L/R wiring is wrong — fix it before anything else.
-> 3. Servo reaches 0°, ±90°, ±150° commanded from the backend within 1 s; ring lights the commanded bearing.
+> **ICS-43434 specifics (do not re-derive):**
+> - Pins: `3V` (1.6–3.6 V), `GND`, `BCLK`, `DOUT`, `LRCLK`, `SEL`. **3.3 V logic only — never 5 V.**
+> - `LRCLK` low = left channel transmits, high = right. `SEL` low = left, `SEL` high = right.
+> - The mic packs **24-bit signed samples left-justified in each 32-bit slot**, so the **top 16 bits of each
+>   32-bit slot are already a signed int16** → configure 32-bit slots and `>> 16` (arithmetic) per sample.
+>   Get this wrong and you get either silence or a −6 dB/octave mess that looks like "bad mics".
+> - `BCLK` 2–4 MHz nominal: `2 ch × 32 bit × 16 kHz = 1.02 MHz` for one bus — slower than nominal but reliably fine.
+> - Both mics on a bus **share BCLK/LRCLK/DOUT**; wire `SEL` to GND on one, 3V3 on the other. Five wires per bus total.
 >
-> **Known traps (each has cost a previous team hours):**
-> - **INMP441 data is 24-bit left-justified inside a 32-bit I2S slot.** You must shift before scaling
->   (`>> 8` for 24-bit, then scale to int16). HearLink hit exactly this; verify with the magnitude test above.
-> - Mics on the **same** I2S bus share BCLK/WS and are selected by the `L/R` pin. Two buses ⇒ one-time
->   inter-bus offset calibration (`config/array.json:inter_bus_offset_samples`) via a handclap at 0°.
-> - **Never let the mic bus and the servo share a supply rail.** Servo transients on the 3V3 rail produce
->   audible clicks in the capture and phantom detections. Separate 5 V, common ground.
-> - HC-SR04 `ECHO` is 5 V and the HC-SR501 PIR prefers 5 V: level-shift both, or you kill the S3.
-> - WiFi: use a fixed channel, disable power save (`esp_wifi_set_ps(WIFI_PS_NONE)`), and prefer UDP over TCP.
+> **Acceptance, in order:**
+> 1. **One bus first.** With only mics 0/1 wired, print per-channel RMS at 10 Hz: silence ≈ tens of LSB,
+>    speech in a quiet room ≈ hundreds-to-thousands. Both channels must show signal.
+> 2. `python3 tools/udp_sniff.py` (written by B) shows `magic=0xA14D`, `nch=4`, `seq` gaps < 0.1 %.
+> 3. **Clap sign-flip test — the make-or-break test.** Clap left of the wearer, then right. The measured
+>    inter-channel delays must **flip sign**. If they don't: geometry, `SEL` wiring, or `>> 16` is wrong.
+>    Do not proceed to integration until this passes.
+> 4. Strip lights the commanded bearing within one frame; serial transport streams at full rate.
+>
+> **Traps:** never power the array from the same rail as a servo (transients are audible and produce phantom
+> detections); mount the bar so the **bottom ports face away from the head** (these are bottom-ported parts —
+> the acoustic hole is under the PCB, on the side away from the solder pads); keep the bar ≥5 mm off the fabric
+> (fabric+foam comb-filters the HF you need for TDOA); keep the S3's antenna clear of the head, the battery,
+> and the brim.
 
-### 6.2 Agent brief — backend, DSP and models
+### 6.2 Agent brief — backend, DSP and models (member B)
 
-> You are working in `~/hackgt-26` during a 36-hour hackathon. Read `README.md` §3, §4 and §8 first; §4 is
-> frozen. You own `server/**`, `models/**`, `tools/`. You must not modify `esp32/**`, `web/**`, or §4.
+> Read §3, §4, §8 of `README.md`; §4 is frozen. You own `server/**`, `models/**`, `tools/**`.
 >
-> **Deliverable:** a Python service that ingests UDP audio (§4.2), runs direction-of-arrival estimation and
-> classification, fuses them into the event stream of §4.5, and serves it at `ws://127.0.0.1:8000/ws`.
-> Components: `server/ingest.py` (UDP → per-channel ring buffers), `server/doa.py` (GCC-PHAT + SRP-PHAT),
-> `server/classify.py` (YAMNet), `server/asr.py` (faster-whisper + name spotter), `server/fuse.py`,
-> `server/main.py` (FastAPI/websockets).
+> **Deliverable:** Python service: `tools/udp_sniff.py` (packet verifier, needed by A today),
+> `server/ingest.py` (UDP **and** serial readers → per-channel ring buffers, seq-gap stats),
+> `server/doa.py` (GCC-PHAT, then SRP-PHAT over a coarse grid), `server/classify.py` (YAMNet),
+> `server/asr.py` (faster-whisper + name spotter), `server/fuse.py`, `server/main.py` (FastAPI + WS on :8000).
 >
-> **A verified YAMNet runner already exists at `~/yamnet/`** — `yamnet_live.py` classifies at 2.4–2.9 ms per
-> 0.975 s window on this laptop, with the TFLite model and the class map. Reuse its `classify()` and copy the
-> model + CSV into `models/`; do not re-derive the loading code.
+> **Reuse `~/yamnet/`**: `yamnet_live.py` already classifies at 2.4–2.9 ms per 0.975 s window with the TFLite
+> model + class map; copy those two files into `models/` and reuse `classify()`. Do not re-derive loading code.
 >
 > **Acceptance:**
-> 1. `python -m server.selftest` feeds synthetic multichannel audio containing a source at a known angle,
->    and recovers it within ±8° (azimuth). Report the error for −60°, −30°, 0°, +30°, +60°.
-> 2. Classification on files: `sine.wav` → `Sine wave`, white noise → `Static`/`Noise`, a real recording of
->    someone talking → `Speech` > 0.7. (All three verified in `~/yamnet`.)
-> 3. `websocat ws://127.0.0.1:8000/ws` shows a `sound_event` within 1.5 s of an actual clap, with the correct
->    sign for left/right.
-> 4. A `speech` message appears within 2 s of a spoken sentence, with text that matches what was said.
+> 1. `python -m server.selftest`: synthetic multichannel audio with a source at a known angle → recovered
+>    within ±8° at −60/−30/0/+30/+60°. Prints the error table.
+> 2. On files: `sine.wav` → `Sine wave`; white noise → `Static`/`Noise`; speech → `Speech` > 0.7.
+> 3. Live: a clap reaches the WS client as a `sound_event` in < 1.5 s **with the correct left/right sign**.
+> 4. A spoken sentence yields a `speech` message with matching text in < 2 s.
 >
-> **Traps:** band-limit TDOA to 300–6000 Hz and use SRP-PHAT, not plain cross-correlation, or Klaus's
-> reverberation will give you 40° errors. Report `accuracy_deg` from the actual spread, not from theory.
-> An array in a room has a front/back ambiguity by construction — the HUD must be told which half-space is
-> valid (the camera usually resolves it); don't silently pick one.
+> **Traps:** band-limit to 300–6000 Hz and use SRP-PHAT — plain cross-correlation fails badly in a reverberant
+> room, and reporting 40° errors as 5° loses the prize. Derive `accuracy_deg` from measured spread. Because the
+> array is 1-D, emit `ambiguous:true` rather than guessing the half-space.
 
-### 6.3 Agent brief — frontend HUD
+### 6.3 Agent brief — frontend HUD (member C)
 
-> You are working in `~/hackgt-26` during a 36-hour hackathon. Read `README.md` §3, §4.5, §4.6, §7.3 first.
-> You own `web/**`. You must not modify `server/**`, `esp32/**`, or §4.
+> Read §3, §4.5, §4.6 first. You own `web/**`.
 >
-> **Deliverable:** a Vite + TypeScript app that (1) opens the camera with `getUserMedia`, (2) connects to
-> `ws://127.0.0.1:8000/ws`, (3) draws a game-HUD overlay: a bearing compass at the bottom, direction markers
-> at each sound event, a label with class + confidence + distance/urgency, (4) for `speech` events
-> transcribes are drawn as **bubbles anchored to the face that produced them**, and (5) dims/floats markers
-> by `accuracy_deg` and `urgency` so the screen never becomes noise.
+> **Deliverable:** Vite + TS app that opens the camera, connects to `ws://127.0.0.1:8000/ws`, and renders a
+> game-HUD overlay: bottom bearing compass, per-event direction markers, class + confidence + urgency labels,
+> and — for `speech` — **bubbles anchored to the face that produced them**. Markers fade with `accuracy_deg`,
+> low-urgency events collapse, `urgent` displaces everything.
 >
-> **Camera ↔ bearing mapping (implement exactly this):**
+> **Camera ↔ bearing mapping (hat frame → camera frame):**
 > ```ts
-> // 0° = camera optical axis. Pinhole: x_ndc = tan(bearing - yaw_offset) / tan(fov/2)
-> const x = 0.5 * (1 + Math.tan(toRad(bearing - calib.yaw_offset_deg)) / Math.tan(toRad(calib.camera_fov_deg / 2)));
-> const px = x * canvas.width;
+> // 0° = hat nose; head_yaw_offset_deg = calibration constant between hat-forward and camera-forward
+> const b = toRad(bearing_deg - calib.head_yaw_offset_deg);
+> const x = 0.5 * (1 + Math.tan(b) / Math.tan(toRad(calib.camera_fov_deg / 2)));
+> const px = x * canvas.width;   // clamp; if |b| > fov/2 draw a chevron at the edge instead
 > ```
-> Config comes from `array_status.calibration` (§4.5). Faces come from MediaPipe Tasks Vision
-> (`FaceLandmarker`) — use it for both the face box and mouth-open state; the mouth signal is what
-> distinguishes a person from a loudspeaker playing speech, which is a required demo beat.
+> Faces: MediaPipe Tasks Vision `FaceLandmarker` — face box **and** mouth-open state; the mouth signal is what
+> separates a person from a loudspeaker, which is a required demo beat.
 >
 > **Acceptance:**
-> 1. With a phone/laptop playing a clap at −40°, 0°, +40°, the marker lands under the matching real-world
->    position (±10 % of frame width) in the camera view.
-> 2. Speaking produces a bubble whose anchor sits on the speaker's face; a loudspeaker playing speech
->    produces a marker **without** a face anchor and is labelled as playback.
-> 3. Overlay holds 60 fps with the camera running; added latency < 50 ms (emit `t` in the message, compare
->    with `performance.now()`).
-> 4. `set_mode: "important"` suppresses low-urgency events; `"quiet"` shows nothing below `high`.
+> 1. Claps at −40°/0°/+40° put the marker under the matching real-world position (±10 % frame width).
+> 2. Speech → bubble anchored to the speaker's face; a speaker playing speech → marker with **no** face anchor.
+> 3. 60 fps overlay, < 50 ms added latency (echo `t` back and compare with `performance.now()`).
+> 4. `set_mode:important` suppresses low-urgency; `quiet` shows only `high`+.
 >
-> **Traps:** `getUserMedia` and WebXR require a secure context — use `localhost` or a self-signed HTTPS
-> origin; **iOS Safari has no WebXR** (Android Chrome or desktop is fine). Don't position markers by absolute
-> time; interpolate, because events arrive at 2–4 Hz and jump.
+> **Traps:** camera needs a secure context — `localhost` or a self-signed HTTPS origin; **iOS Safari has no
+> WebXR** (Android Chrome/desktop are fine). Interpolate positions — events arrive at 2–4 Hz and will jump.
+> `ambiguous:true` events should render as two mirrored candidates, not one arbitrary choice.
 
 ### 6.4 Integration owner (member D)
 
-Owns `docs/`, the calibration log, the Devpost write-up, the 2-minute video, and the final merge. Runs the
-end-to-end acceptance test in §7.4 at 04:00 Sunday and freezes the repo at 05:00.
+Owns `docs/`, hat assembly, the calibration log, the accuracy curve, the Devpost write-up, the 2-minute video,
+and the final merge. Runs the full acceptance test at **04:00 Sunday**, freezes the repo at **05:00**.
 
 ---
 
-## 7. Calibration procedures (do these once, write the numbers into `config/calib.json`)
+## 7. Hardware
 
-1. **Baseline.** Measure the actual mic-to-mic distance with calipers; set `baseline_m`. Do not trust the CAD.
-2. **Inter-bus offset.** Clap directly in front (0°). Cross-correlate bus 0 against bus 1; write the sample
-   offset into `inter_bus_offset_samples`.
-3. **Yaw offset.** Put a clap/phone at the camera's optical axis. Backend should report ≈0°; if it reports
-   `θ`, set `yaw_offset_deg = θ`.
-4. **Accuracy curve.** Claps at −90…+90 in 15° steps, 5 trials each. Plot measured vs actual; record mean
-   absolute error and the 1-sigma spread per bin. **These numbers go in the write-up** — they are our delta.
-5. **Audio/vision offset.** Clap while the camera sees the hands; measure the video-vs-audio timestamp skew;
-   record as `audio_delay_ms`.
+### 7.1 Hat build (do this before anything aesthetic)
+
+| Concern | Decision |
+|---|---|
+| Array | **Straight bar, 4 mics, 80 mm spacing (240 mm baseline)**, in front of the brim. A curved arc breaks the linear TDOA formula — keep it straight. |
+| Port direction | ICS-43434 is **bottom-ported**: acoustic hole is on the far side from the solder pads. Mount so ports face **away from the head**, bar standing ≥5 mm off the fabric. |
+| Mid-build carrier | Strip of perfboard + hot glue. **Do not put the Hive on the critical path** — the printed bar/shell is a P1-P2 nicety, not a dependency. |
+| Wiring | 5 wires per bus (BCLK, LRCLK, DOUT, 3V, GND) shared by both mics on that bus; 30 AWG silicone wire; strain-relieve at the board. |
+| Power | Small 5 V power bank in the crown at the back; S3 regulator to 3V3 for the mics. Balance the hat, or the brim droops. |
+| RF | 2.4 GHz is absorbed by the body and jammed at Expo. Antenna up and outward, and **test the USB tether early**. |
+| Wind / fabric | Foam windscreen over the bar; a bare MEMS port against fabric hears only the wearer's scalp and clothing noise. |
+| Stretch | 5th mic on the crown for a vertical baseline (elevation). WS2812 strip on the brim is P0 output. |
+| Explicitly not | A servo on the head: heavy, noisy (it injects into the mics), and unnecessary once the strip is the display. Keep the servo for a desktop variant only. |
+
+### 7.2 Calibration (write results into `config/calib.json`)
+
+1. **Baseline.** Measure actual mic-to-mic distance; set `spacing_m` / `baseline_m`. Never trust CAD.
+2. **Inter-bus offset.** Clap at 0°; cross-correlate bus 0 vs bus 1; store the sample offset.
+3. **Head yaw offset.** Point the camera at a source; store `head_yaw_offset_deg = measured_bearing`.
+4. **Accuracy curve — this is our delta.** Claps at −90…+90° in 15° steps, 5 trials each: plot measured vs
+   actual, record mean absolute error and 1-sigma per bin. Cold-start vs 30-minute-later run (drift check).
+5. **Audio/vision offset.** Clap while the camera sees it; record `audio_delay_ms`.
 
 ---
 
@@ -315,14 +363,13 @@ end-to-end acceptance test in §7.4 at 04:00 Sunday and freezes the repo at 05:0
 
 ### 8.1 Already done and verified
 
-- `~/yamnet/` holds a working YAMNet runner: `./yamnet-live` (live mic, TUI), `./yamnet-live -f x.wav`,
-  `--jsonl` for machine-readable output. Model + class map included (4.1 MB, 521 AudioSet classes).
-- Verified today: 440 Hz sine → `Sine wave 89 %`; pink noise → `Pink noise`; live speech → `Speech 88–92 %`;
-  inference **2.4–2.9 ms per 0.975 s window**.
-- NixOS quirk: the PyPI wheels need `libstdc++.so.6` and `libz.so.1`, which are not on the default loader
-  path. `~/yamnet/yamnet-live` exports both — copy that pattern if you build your own venv.
+- `~/yamnet/`: working YAMNet runner — `./yamnet-live` (live mic TUI), `-f file.wav`, `--jsonl`.
+  Verified: 440 Hz sine → `Sine wave 89 %`; pink noise → `Pink noise`; live speech → `Speech 88–92 %`;
+  **2.4–2.9 ms per 0.975 s window**.
+- NixOS quirk: PyPI wheels need `libstdc++.so.6` and `libz.so.1`, which are not on the default loader path;
+  `~/yamnet/yamnet-live` exports both. Copy that pattern for any new venv.
 
-### 8.2 Fetching the model (gitignored)
+### 8.2 Model fetch (gitignored)
 
 ```bash
 mkdir -p models
@@ -332,60 +379,74 @@ curl -L -o models/yamnet_class_map.csv \
   "https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv"
 ```
 
-### 8.3 Quick environment
+### 8.3 Environment
 
 ```bash
 uv venv .venv && . .venv/bin/activate
-uv pip install numpy scipy ai-edge-litert soundfile faster-whisper fastapi uvicorn websockets
+uv pip install numpy scipy ai-edge-litert soundfile faster-whisper fastapi uvicorn websockets pyserial
 ```
-
-Camera capture for the backend-side tests uses `ffmpeg` (already installed) — the browser owns the camera
-for the HUD; the backend never needs it.
 
 ---
 
-## 9. Timeline (remaining)
+## 9. Plan from 10:35 Saturday
 
-| Time | A — ESP32 | B — backend | C — frontend | D — integration |
+**Scope ladder — build top-down, cut bottom-up:**
+
+- **P0 (must ship):** hat serves audio → backend computes bearing + YAMNet class → **LED strip shows direction**
+  and a browser HUD marker lands in the right place. Accuracy honestly reported (even if ±20°).
+- **P1 (should):** 4 mics, real accuracy curve, transcription bubbles anchored to faces, urgency tiers,
+  playback-vs-person imagery.
+- **P2 (nice):** printed bar/shell, elevation from a crown mic, Quest passthrough view, importance-filter UI.
+
+Cut order when behind: Quest → elevation → printed parts → bubbles (keep transcript as a list) → 4th mic →
+3rd mic → LED strip (then you only have the screen HUD).
+
+| Window | A — hat/ESP32 | B — backend | C — frontend | D — integration |
 |---|---|---|---|---|
-| now → 04:00 | 4-ch I2S capture, packetizing, UDP out | ingest + ring buffer + GCC-PHAT stub | camera + WS client + compass HUD | contract check, calibration rig |
-| 04:00–09:00 | sleep shift | sleep shift | sleep shift | sleep shift |
-| 09:00–12:00 | clap sign-flip test, telemetry, servo | SRP-PHAT + YAMNet wired to live audio | markers from live events | angle-calibration rig |
-| 12:00–15:00 | servo aim command path, ring | fuse events + Whisper | face detection + bubble anchoring | run accuracy curve (§7.4) |
-| **15:00–21:00** | **Hive window:** print array bracket, pointer, stand | importance filtering | urgency styles, playback-vs-person | video B-roll |
-| 21:00–04:00 | pointer + ring integration | end-to-end stability, accuracy report | final HUD polish, fps check | **04:00 full acceptance test** |
-| 04:00–05:00 | — | freeze | freeze | **code freeze 05:00**, video + write-up |
-| 09:00 | — | — | — | Expo; invite judges to clap from different sides |
+| 10:35–12:00 | **One bus, two mics, RMS printout.** Split off a buyer (hat, perfboard, 30 AWG, power bank, foam, USB-C cable) | venv, `udp_sniff.py`, `server/selftest.py` on synthetic data | Vite app + WS client + compass HUD with **fake events** | contract sanity check, start `docs/calibration.md` |
+| 12:00–14:30 | 4 mics on 2 buses, packetizer, UDP out | ingest + GCC-PHAT on live packets | markers from live events | geometry measurement, `array.json` values |
+| **14:30** | — | — | — | **CAD deadline** — only if a printed part is in scope |
+| 15:00–18:00 | Hat assembly (perfboard bar, wiring, power, RF check), telemetry, strip | SRP-PHAT + YAMNet on real audio, event fusion | camera + face detection | Hive window (print/laser) + B-roll |
+| 18:00–21:00 | **Clap sign-flip test**, then calibration | live end-to-end tuning, ambiguous flag | real markers + edge chevrons | run calibration, record first numbers |
+| 21:00–01:00 | strip/urgency integration, strain relief, spares | Whisper + name spotter, accuracy sweep | bubbles anchored to faces, playback case | accuracy curve (§7.2.4) |
+| 01:00–04:00 | sleep in staggered shifts (two awake) | same | same | draft write-up + video outline |
+| **04:00–05:00** | freeze | freeze | freeze | **full acceptance test 04:00, freeze 05:00** |
+| 05:00–08:00 | — | — | — | video + Devpost submission |
+| 09:00 | — | — | — | Expo: wearer turns their head; judges clap from different sides |
 
 ---
 
 ## 10. Demo script (2 minutes)
 
-1. Judge stands behind-left and claps → HUD marker appears at that bearing, labelled `Clapping 0.9`, ring lights the same direction, physical pointer snaps to it.
-2. Judge says the user's name → bubble anchored to their face, transcribed text, bearing tag.
-3. A phone plays a speech clip from off-screen → marker appears **with no face anchor**, labelled `playback`.
-4. A smoke-alarm test sound from a laptop speaker → `urgent`, displaces everything, pointer + ring pulse.
-5. Cut to the pointer alone on the desk, screens off, still tracking.
-6. Title card with the accuracy curve from §7.4.
+1. Wearer faces the camera; judge claps **left-behind** → brim strip lights left-rear, HUD marker lands there, label `Clapping 0.9`.
+2. Judge walks around the wearer; the wearer **turns their head** → the reading follows the head frame, front/back resolves live.
+3. Judge says the wearer's name → bubble anchored to the speaker's face with the transcribed text.
+4. A phone plays a speech clip from off-screen → marker appears with **no face anchor**, labelled `playback`.
+5. Smoke-alarm sound from a laptop → `urgent`, displaces everything, strip pulses.
+6. Screens off: **the strip alone still shows direction.** (This is the accessibility shot.)
+7. Title card with the §7.2.4 accuracy curve.
 
 ## 11. References
 
-- SoundWatch, ASSETS 2020 (UW) — smartwatch sound classification; overload/filtering findings: https://makeabilitylab.cs.washington.edu/project/soundwatch/
-- HoloSound, ASSETS 2020 (UW) — AR HMD speech + sound identification for DHH: https://makeabilitylab.cs.washington.edu/project/holosound/
+- Adafruit ICS-43434 breakout (PID 6049): pins, `SEL`, bottom-ported, 1.6–3.6 V — https://learn.adafruit.com/adafruit-i2s-mems-microphone-breakout/pinouts
+- 24-bit left-justified-in-32-bit-slot detail (top 16 bits = int16) — https://learn.adafruit.com/i2s-microphones-with-circuitpython
+- SoundWatch, ASSETS 2020 — smartwatch sound classification; **overload/filtering** findings: https://makeabilitylab.cs.washington.edu/project/soundwatch/
+- HoloSound, ASSETS 2020 — AR HMD speech + sound ID for DHH: https://makeabilitylab.cs.washington.edu/project/holosound/
 - HMD sound visualizations, CHI 2015: https://dl.acm.org/doi/abs/10.1145/2702123.2702393
-- AR household sounds for DHH, 2023: https://pmc.ncbi.nlm.nih.gov/articles/PMC10490607/
-- Prior projects we extend: HearLink (4× INMP441 on 2 I2S buses) https://devpost.com/software/hearlink · echoBelt (1st place, Hackaburg 2026) https://devpost.com/software/echobelt · WhisperMap https://devpost.com/software/whispermap · N1 AR sound-awareness glasses https://devpost.com/software/n1-augmented-relaity-sound-awareness-glasses · Low-latency Sound Disambiguator https://devpost.com/software/low-latency-sound-disambiguator
-- YAMNet: https://tfhub.dev/google/lite-model/yamnet/classification/tflite/1
+- Prior projects we extend: **HearLink** (4× I2S mics, 2 buses, S3, necklace) https://devpost.com/software/hearlink · **echoBelt** (1st place, Hackaburg 2026) https://devpost.com/software/echobelt · **WhisperMap** https://devpost.com/software/whispermap · **N1 AR glasses** https://devpost.com/software/n1-augmented-relaity-sound-awareness-glasses · **Low-latency Sound Disambiguator** https://devpost.com/software/low-latency-sound-disambiguator
+- YAMNet TFLite: https://tfhub.dev/google/lite-model/yamnet/classification/tflite/1
 
-## 12. Traps, ranked by how much time they cost
+## 12. Traps, ranked by time cost
 
 | Trap | Mitigation |
 |---|---|
-| INMP441 24-bit-in-32-bit-slot scaling | `>> 8` then scale; validate with the magnitude test |
-| Servo noise coupling into the mic bus | separate 5 V rail, common ground, only move the servo between windows |
-| Two I2S buses drifting apart | fixed inter-bus offset via clap calibration; verify weekly-drift-free over 30 min |
-| Reverberation ruining TDOA | band-limit 300–6000 Hz, SRP-PHAT, report honest `accuracy_deg` |
-| Overload: the screen becomes noise | importance filtering + urgency tiers + `set_mode` |
-| iOS Safari has no WebXR / camera needs HTTPS | demo on Android Chrome or desktop; tunnel or self-signed cert |
-| Expo hall noise → false events | `set_mode: important`, demo vocabulary, manual trigger for the video |
-| Four people editing the same interface | §4 is frozen; changes are README edits in the same commit |
+| ICS-43434 32-bit slot handling (`>> 16` for int16) | Do it in the first 20 minutes; validate with the RMS test before wiring all 4 mics |
+| Bottom-ported mics mounted against fabric | Ports face away from the head; 5 mm standoff; foam windscreen |
+| Servo/regulator transients injecting into the mic bus | Separate 5 V rail, common ground, no servo on the head |
+| Two I2S buses drifting apart | One-time inter-bus offset via clap; re-check at 30 min (drift test) |
+| Only one I2S port available (if the C3 is used) | Use the S3 for 4 mics; with one port, ship **2 mics** — azimuth still works |
+| Reverberation wrecking TDOA | 300–6000 Hz band, SRP-PHAT, report honest `accuracy_deg` |
+| Expo hall jams 2.4 GHz | **USB-CDC transport is the demo path**; WiFi is the "look, wireless" shot |
+| Overload: the HUD becomes noise | Urgency tiers + `set_mode`, both in P1 |
+| Camera needs HTTPS; iOS has no WebXR | localhost/self-signed cert; demo on Android Chrome or desktop |
+| Four people editing one interface | §4 frozen; contract changes = README edit in the same commit |

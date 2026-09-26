@@ -1,0 +1,22 @@
+{
+  "rate_hz": 16000,
+  "layout": "line",
+  "spacing_m": 0.08,
+  "baseline_m": 0.24,
+  "mics": [
+    { "id": 0, "bus": 0, "lr": "L", "x": -0.12, "y": 0.0, "z": 0.0 },
+    { "id": 1, "bus": 0, "lr": "R", "x": -0.04, "y": 0.0, "z": 0.0 },
+    { "id": 2, "bus": 1, "lr": "L", "x": 0.04, "y": 0.0, "z": 0.0 },
+    { "id": 3, "bus": 1, "lr": "R", "x": 0.12, "y": 0.0, "z": 0.0 }
+  ],
+  "inter_bus_offset_samples": [0, 0, 0, 0],
+  "head_yaw_offset_deg": 0.0,
+  "camera_fov_deg": 62.0,
+  "front_half_is": "nose",
+  "_notes": [
+    "x/y/z in metres, hat frame: +x = wearer's right, 0deg bearing = +y (nose).",
+    "spacing drives two things: aliasing limit c/(2d) = 2144 Hz at 0.08 m, and delay resolution (finer spacing = harder).",
+    "SEL wiring: bus0 mic0 SEL=GND (left), mic1 SEL=3V3 (right); same for bus1.",
+    "inter_bus_offset_samples is measured with a clap at 0 degrees (see README 7.2.2)."
+  ]
+}
