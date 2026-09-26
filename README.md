@@ -53,19 +53,21 @@ Unchecked P0 items at the 04:00 acceptance run decide what the video is allowed 
 - [ ] A12 `esp32/HAT.md` committed: wiring map (bus→mic→SEL), pin assignments, known quirks
 
 ### B — Backend / models
-- [ ] B1 Model fetched, sizes match §8.1 — evidence: `ls -l models/`
-- [ ] B2 `server/classify.py` implements the §8.2 API; startup logs path + sha256 + class count
-- [ ] B3 §8.2 reproduction checks pass (sine → `Sine wave` ≈0.89, noise → not `Speech`, real speech > 0.7) — evidence: selftest output
-- [ ] B4 Inference time recorded in `docs/`
-- [ ] B5 `tools/udp_sniff.py` exists and prints packet stats (this unblocks A's A5)
-- [ ] B6 `server/ingest.py` reads UDP **and** serial into per-channel ring buffers; exposes seq-gap stats
-- [ ] B7 GCC-PHAT on synthetic data within ±8° at −60/−30/0/+30/+60 — evidence: error table
-- [ ] B8 SRP-PHAT on live audio; `accuracy_deg` from measured spread; `ambiguous` flag set on 1-D ambiguity
-- [ ] B9 `backend_status` emitted on client connect + every 10 s with model sha256 + git rev
-- [ ] B10 Clap reaches a WS client as `sound_event` in < 1.5 s **with correct left/right sign**
-- [ ] B11 `speech` message within 2 s of an utterance, text matches; name spotter works
-- [ ] B12 Channel choice documented in code (P0 mid-pair → P1 steered beam); never a raw 4-ch sum
-- [ ] B13 `requirements.txt` installs clean into a **fresh** venv on a second machine — evidence: install log
+- [x] B1 Model fetched, sizes match §8.1 — evidence: `ls -l models/` → 4126810 / 14096 bytes — B, 15:40
+- [x] B2 `server/classify.py` implements the §8.2 API; startup logs path + sha256 + class count — B, 15:40 (live log: `yamnet models/yamnet.tflite sha256=10c95ea3… classes=521 rate=16000 window=15600`)
+- [x] B3 §8.2 reproduction checks pass (sine → `Sine wave` ≈0.89, noise → not `Speech`, real speech > 0.7) — evidence: selftest output — B, 15:40 (`.venv/bin/python -m server.classify`: sine `Sine wave` 0.996; white `Static` 0.738; pink `Noise` 0.918; real speech 0.968–0.984; 8/8 checks PASS)
+- [x] B4 Inference time recorded in `docs/` — B, 15:40 (5.65 ms mean per 0.975 s window, warm, XNNPACK CPU; `docs/backend-evidence.md`)
+- [x] B5 `tools/udp_sniff.py` exists and prints packet stats (this unblocks A's A5) — B, 15:40 (`--selftest`: 150/150 packets, 50.0 pps, 0 gaps, per-channel RMS, exit 0)
+- [x] B6 `server/ingest.py` reads UDP **and** serial into per-channel ring buffers; exposes seq-gap stats — B, 15:40 (`server.selftest --only udp`: 5/5 §4.2 packets, seq 0..4, per-channel levels round-trip; serial shares `parse_packet`, live over USB-CDC pending A6)
+- [x] B7 GCC-PHAT on synthetic data within ±8° at −60/−30/0/+30/+60 — evidence: error table — B, 15:40 (`server.selftest --only doa`: laptop ±1.7°, hat (SRP) ±6.0°, both PASS)
+- [x] B8 SRP-PHAT on live audio; `accuracy_deg` from measured spread; `ambiguous` flag set on 1-D ambiguity — B, 15:40 with a caveat: SRP verified on synthetic hat geometry (±6°), `accuracy_deg` comes from the measured sub-band spread, `ambiguous:true` on every 1-D result — **live** audio DOA is blocked by this laptop's DMIC capture (see D-note below), not by the code
+- [x] B9 `backend_status` emitted on client connect + every 10 s with model sha256 + git rev — B, 15:40 (verified by `tools/latency_bench.py`: 2–3 `backend_status` + 9 `array_status` in a 16 s session)
+- [ ] B10 Clap reaches a WS client as `sound_event` in < 1.5 s **with correct left/right sign** — partially: real onset→client measured at **p50 385 ms** (bench), and the sign flip is verified synthetically (`selftest --only e2e`, +40°/−40° within 3°), but a *live* sign-flip needs an array that can hear; blocked on the DMIC capture path
+- [ ] B11 `speech` message within 2 s of an utterance, text matches; name spotter works — module verified (synthesized speech transcribed word-for-word, 1.2 s/utterance, name spotter tested), end-to-end pending a usable microphone
+- [x] B12 Channel choice documented in code (P0 mid-pair → P1 steered beam); never a raw 4-ch sum — B, 15:40 (`server/beam.py`: P1 delay-and-sum steered to the bearing, P0 mean of the *widest* pair; no code path sums all channels)
+- [ ] B13 `requirements.txt` installs clean into a **fresh** venv on a second machine — evidence: install log — not run on a second machine yet (fresh-venv install on this one succeeded, `import ai_edge_litert` OK without the §8.5 loader workaround)
+- [x] B14 Latency bench exists and reports the three stages separately — B, 15:40 (`tools/latency_bench.py`: ping RTT p50 1.1 ms, backend onset→emit p50 380 ms, emit→client p50 4.4 ms, onset→client p50 385 ms, all on real speaker-played claps)
+- [x] B15 Camera path implemented: the HUD forwards face boxes, the backend fuses them into a bearing — B, 15:40 (§4.6 `vision`; `server/vision.py`, `fuse.localize`; README §4.5/§4.6 updated in the same commit)
 
 ### C — Frontend HUD
 - [x] C1 App runs, camera opens, WS connects, `backend_status` (model + transport) rendered — C, 12:10 (evidence: `web/dev/evidence.md` §C1; real 1280x720 getUserMedia + ws open + diagnostics)
@@ -266,6 +268,23 @@ Every message carries `type` and `t` (seconds since backend start, monotonic).
 {"type":"timeline","t":20.0,"events":[ /* recent sound_event / speech objects */ ]}
 ```
 
+**Additive fields (owner B, 2026-09-26).** Implementations MAY attach extra keys; the HUD ignores
+unknown keys, so these are not breaking. This backend currently adds:
+
+| Where | Key | Meaning |
+|---|---|---|
+| `sound_event`, `speech` | `t_onset` | seconds since backend start of the first sample of the sound. This is what makes **onset → client** latency measurable instead of asserted (`tools/latency_bench.py`) |
+| `sound_event` | `method` | `gcc-phat-pairs` \| `srp-phat` \| `vision` \| `camera-tiebreak` \| `none` — how the angle was obtained |
+| `sound_event` | `delay_samples`, `snr_db`, `peak_db`, `alternatives` | diagnostics: the measured TDOA on the widest baseline, segment SNR, and the runner-up classes |
+| `sound_event` | `name_heard` | set on a re-sent parent when the wearer's name was spotted in the transcript (id is unchanged, so the HUD updates in place) |
+| `array_status.calibration` | `calibrated`, `profile`, `fit_spacing_m`, `fit_n` | whether the delay→angle scale is measured, which geometry is live, and the camera-referenced spacing fit behind it |
+| `backend_status` | `source`, `asr`, `vision_frames`, `mode`, `noise_floor_db`, `events`, `latency` | the "why is nothing showing up" readout |
+
+`source` ∈ `array` (acoustics only) · `array+vision` (camera resolved the half-space or supplied the
+angle) · `vision` (camera only) · `none`. **`none` means nothing could localize the sound**: the class
+is still real and useful, and `accuracy_deg` is 180 so the HUD fades the marker to nothing rather
+than drawing a confident lie.
+
 `urgency` ∈ `low | normal | high | urgent`; alarm/siren/smoke → `urgent`, and the HUD must let it displace
 everything else (SoundWatch's top finding: **overload is the failure mode**).
 
@@ -274,7 +293,23 @@ everything else (SoundWatch's top finding: **overload is the failure mode**).
 ```json
 {"type":"set_mode","mode":"all|important|quiet"}
 {"type":"ping","t":1.0}
+{"type":"vision","t":1.23,"faces":[{"xc":0.42,"w":0.12,"mouth":0.31,"mouthActive":true}]}
 ```
+
+`vision` (added by owner B, 2026-09-26, additive) carries the face observations the HUD already
+computes, because **there is exactly one webcam and the browser owns it**: the backend cannot open
+`/dev/video0` while the HUD streams it. Sent at ~10 frames/s while face tracking is `ready`.
+
+- `xc` — face-box **centre** as a fraction of the camera frame width. This is the exact inverse of the
+  frozen projection in §6.3: `bearing = atan((2·xc − 1)·tan(fov/2)) + head_yaw_offset_deg`.
+- `w` — box width as a frame fraction, used for the bearing's error bar.
+- `mouth` / `mouthActive` — MediaPipe `jawOpen` and the HUD's own hysteresis. A face whose mouth is
+  moving is taken as the source of a speech-like sound; any visible face can break the linear array's
+  front/back tie (README §4.1 resolution (c)).
+
+Frames are aged out after 0.6 s: a face seen three seconds ago says nothing about a sound now. The
+backend never sends face data back, and never trusts a face for anything except a bearing and
+`presence`.
 
 ### 4.7 `config/array.json` — geometry single source of truth
 
@@ -378,6 +413,37 @@ require a README edit in the same commit; `main` must stay runnable.
 > **Traps:** band-limit to 300–6000 Hz and use SRP-PHAT — plain cross-correlation fails badly in a reverberant
 > room, and reporting 40° errors as 5° loses the prize. Derive `accuracy_deg` from measured spread. Because the
 > array is 1-D, emit `ambiguous:true` rather than guessing the half-space.
+
+#### 6.2.1 Running the backend (owner B)
+
+Python venv only; `tools/run_backend.sh` is the one documented entry point (it also handles the NixOS
+loader-path quirk of §8.5, and is a plain pass-through everywhere else).
+
+```bash
+uv venv .venv && uv pip install -r requirements.txt   # once
+tools/run_backend.sh                                  # defaults: --profile laptop_dmic --source auto
+tools/run_backend.sh --source udp                     # the hat, once A is streaming §4.2
+tools/run_backend.sh --source file --source-file x.wav # replay a recording at real time
+tools/run_backend.sh --no-asr --print-events           # no Whisper; one line per event in the terminal
+```
+
+| Situation | Command |
+|---|---|
+| Laptop stand-in array (this laptop's DMIC pair) | `--profile laptop_dmic` |
+| The hat (4 mics, `config/array.json` + measured `calib.json`) | `--profile hat` |
+| Auto-detect: listen on UDP :7000, fall back to the local mic after 2 s | `--source auto` (default) |
+| Latency, on a real sound played from the speakers | `.venv/bin/python tools/latency_bench.py --inject-side flip` |
+| Sign-flip test (A10) on any array, no ESP32 needed | the same command — it prints `sign flip: OK/MISMATCH` |
+| Verify the pipeline with no microphone at all | `.venv/bin/python -m server.selftest` |
+| Watch §4.2 packets (the tool A5 needs) | `.venv/bin/python tools/udp_sniff.py --selftest` |
+
+- **`--fit-spacing write`** (default) measures the array's effective spacing against the camera while
+  someone talks, and persists it into `server/profiles/<name>.json`. `config/calib.json` stays owner D's.
+- **Measured on this laptop (2026-09-26):** the DMIC capture path is dominated by DC/LF/HF junk
+  (~−15 dBFS, +68 dB at Nyquist) and real acoustic signals arrive ~50 dB below it, so live acoustic
+  DOA is **not usable here** and the coherence gate correctly refuses to invent an angle. Onset
+  timing, classification, ASR and the whole latency chain are unaffected and measured; the array
+  claims wait for the hat. See `docs/backend-evidence.md`.
 
 ### 6.3 Agent brief — frontend HUD (member C)
 

@@ -1,8 +1,9 @@
 // Backend WebSocket client: reconnect with capped backoff, `?ws=` override,
 // 1 Hz `ping` for the latency measurement, and typed ingest of the §4.5 stream.
-// Sends only §4.6 messages (`set_mode`, `ping`).
+// Sends §4.6 messages (`set_mode`, `ping`) plus the additive `vision` frame the
+// backend needs for a camera-backed bearing (see types.ts VisionMsg).
 
-import type { BackendMsg, ClientMsg, Mode } from './types'
+import type { BackendMsg, ClientMsg, Mode, VisionFaceMsg } from './types'
 
 export type ConnState = 'connecting' | 'open' | 'closed' | 'blocked' | 'error'
 
@@ -124,6 +125,15 @@ export class WsClient {
   /** §4.6 `ping` with the caller's `performance.now() / 1000` stamp. */
   ping(t: number): void {
     this.raw({ type: 'ping', t })
+  }
+
+  /**
+   * §4.6 `vision` (additive): hand the backend the face boxes this page already
+   * computes, so it can produce a camera-backed bearing. Silent when the socket
+   * is closed — a dropped frame is not an error, the next one is 100 ms away.
+   */
+  faces(faces: VisionFaceMsg[]): void {
+    this.raw({ type: 'vision', t: performance.now() / 1000, faces })
   }
 
   private raw(msg: ClientMsg): void {

@@ -50,6 +50,19 @@ ws.onStatus = (status) => {
 }
 vision.onStatus = (status) => {
   hud.setVision(status.state, vision.faces)
+  // §4.6 `vision` (additive): the backend cannot open the webcam this page is
+  // streaming, so the face boxes travel over the socket. ~10 frames/s, and only
+  // while tracking is healthy — a stale or empty frame is simply not sent.
+  if (status.state === 'ready') {
+    ws.faces(
+      vision.faces.map((f) => ({
+        xc: f.box.x + f.box.w / 2,
+        w: f.box.w,
+        mouth: f.jawOpen,
+        mouthActive: f.mouthActive,
+      })),
+    )
+  }
   paintDiagnostics()
 }
 

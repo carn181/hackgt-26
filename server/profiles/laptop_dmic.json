@@ -1,0 +1,38 @@
+{
+  "name": "laptop_dmic",
+  "transport": "pw",
+  "_notes": [
+    "Stand-in array: the ThinkPad T14s' 2-channel DMIC pair on the lid (owner B's dev profile).",
+    "Same shape as config/array.json so ingest/DOA/fusion are geometry-agnostic; swapping in the",
+    "hat is `--profile hat` and nothing else. This is NOT the wearable and must never be claimed as it.",
+    "Channels are the device channel order from pw-record (audio.position FL,FR): 0 = left, 1 = right.",
+    "x is the hat frame axis (0deg bearing = +y = nose); with the lid as the array, +x = wearer right.",
+    "spacing_m starts null: the real value is measured, never assumed. The measured value is",
+    "filled in automatically by `server/main.py --fit-spacing write`, which borrows the camera",
+    "bearing while someone talks (server/calib_fit.py) and writes back into this file.",
+    "Until then DOA still measures the real sign, and accuracy_deg is deliberately huge.",
+    "highpass_hz/lowpass_hz are required on this laptop and are set to the DOA band itself:",
+    "the DMIC pair arrives with a large DC offset (ch1 +5160 LSB), a spectral rise below 250 Hz",
+    "and a second rise above 6 kHz (+68 dB at Nyquist). Measured with a clap played from the",
+    "speakers: 5.6 dB above the room unfiltered, 26 dB once the junk is band-passed away, and",
+    "0 onsets detected unfiltered vs every clap detected filtered. See server/ingest.py BandPass.",
+    "device: the PipeWire node name of the DMIC array; null = whatever the default source is."
+  ],
+  "rate_hz": 16000,
+  "layout": "line",
+  "spacing_m": null,
+  "baseline_m": null,
+  "calibrated": false,
+  "uncalibrated_accuracy_deg": 45.0,
+  "front_back_heuristic": false,
+  "highpass_hz": 300.0,
+  "lowpass_hz": 6000.0,
+  "head_yaw_offset_deg": 0.0,
+  "camera_fov_deg": 62.0,
+  "device": null,
+  "channels": [0, 1],
+  "mics": [
+    { "id": 0, "x": -0.05, "y": 0.0, "z": 0.0 },
+    { "id": 1, "x": 0.05, "y": 0.0, "z": 0.0 }
+  ]
+}

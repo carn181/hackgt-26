@@ -99,7 +99,31 @@ export interface PingMsg {
   t: number
 }
 
-export type ClientMsg = SetModeMsg | PingMsg
+/**
+ * One face as the backend wants it (README §4.6, additive to the frozen
+ * contract). `xc` is the box **centre** as a fraction of the camera frame width
+ * — the exact inverse of `projection.ts`'s `x` — so the backend can turn a face
+ * into a hat-frame bearing. `mouth` is MediaPipe `jawOpen`.
+ *
+ * This exists because there is exactly one webcam and this page owns it: the
+ * backend cannot open `/dev/video0` while the HUD is streaming, so the HUD is
+ * the camera's transport. Fields are computed locally and are never trusted for
+ * anything except a bearing.
+ */
+export interface VisionFaceMsg {
+  xc: number
+  w: number
+  mouth: number
+  mouthActive: boolean
+}
+
+export interface VisionMsg {
+  type: 'vision'
+  t: number
+  faces: VisionFaceMsg[]
+}
+
+export type ClientMsg = SetModeMsg | PingMsg | VisionMsg
 
 // ---------------------------------------------------------------------------
 // Face tracking (on-device, worker-side). Local to the app: never on the wire.
