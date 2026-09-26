@@ -1,8 +1,8 @@
 # hackgt-26 — Wearable Sound-Awareness Cap
 
 A cap with a 4-microphone array that finds **where** a sound came from, identifies **what** it is, and shows
-both to a d/Deaf or hard-of-hearing wearer — direction on an LED strip on the brim, and a game-style HUD
-overlay (bearing marker, class label, speech bubbles anchored to faces) on a phone/laptop camera view.
+both to a d/Deaf or hard-of-hearing wearer — and a game-style HUD
+overlay (bearing marker, class label, speech bubbles anchored to faces) on a phone/laptop camera view, direction on the HUD (as translucent arrows).
 
 **Status: nothing built yet.** Timestamp of this revision: **Sat 2026-09-26 11:15 EDT**.
 
@@ -20,7 +20,7 @@ overlay (bearing marker, class label, speech bubbles anchored to faces) on a pho
 |---|---|
 | 1× ESP32-S3 (+ 1× ESP32-C3 spare) | **Use the S3**: 4 mics need **2 I2S buses** (2 channels each). The C3 has one I2S port → 2 mics max. |
 | **4× Adafruit ICS-43434 I2S mic breakouts** (PID 6049) | 1.6–3.6 V, 24-bit, bottom-ported, `SEL` pin picks L/R |
-| Servo, PIR (HC-SR501), HC-SR04, WS2812 ring/strip, OLED | optional / stretch |
+| Servo |
 | Fifine lav (single TX) | **not part of the array** — wireless AGC + unknown latency ruin TDOA. Wearable-comparison prop only. |
 
 ---
