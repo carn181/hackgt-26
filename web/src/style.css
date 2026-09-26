@@ -26,11 +26,15 @@ html, body {
   inset: 0;
   width: 100%;
   height: 100%;
-  /* contain, not cover: cover was magnifying+cropping a landscape camera
-     stream to fill a portrait screen ("zoomed in"). This shows the full,
-     un-cropped, un-magnified feed -- natural 1x -- at the cost of letterbox
-     bars where the aspect ratios don't match. */
-  object-fit: contain;
+  /* cover: fills the screen edge to edge with no letterbox bars, same as a
+     normal camera app's viewfinder. The earlier "zoomed in" complaint was
+     actually caused by also requesting an extreme aspect ratio from the
+     camera (main.ts), which pushed some phones into a hardware-level
+     crop/zoom on top of this -- removing that fixed the real problem.
+     What cover crops here is compensated for in the bearing math (see
+     effectiveFovDeg in calib.ts) instead of avoided, so this can stay a
+     normal full-bleed camera view. */
+  object-fit: cover;
   background: #111;
 }
 

@@ -1,7 +1,14 @@
 import "./style.css";
 import { HudState } from "./state";
 import { WsClient, resolveWsUrl, type ConnState } from "./ws-client";
-import { computeContainRect, DEFAULT_CALIB, screenXToBearingDeg, normalizeDeg } from "./calib";
+import {
+  computeCoverCrop,
+  DEFAULT_CALIB,
+  effectiveFovDeg,
+  screenXToBearingDeg,
+  normalizeDeg,
+  videoNormToCropNorm,
+} from "./calib";
 import { detectFaces, initFaceLandmarker, type DetectedFace } from "./faces";
 import { drawOverlay, type FaceAnchor } from "./render";
 import type { BackendMsg, Calibration, Mode } from "./types";
@@ -106,10 +113,12 @@ async function startCamera() {
     // Deliberately no width/height/aspectRatio constraints: asking for a
     // specific (especially a tall-portrait) aspect ratio can push some
     // phone cameras into a hardware-level crop/zoom to manufacture that
-    // ratio -- exactly the "too zoomed in, not natural 1x" problem this is
-    // fixing. Plain facingMode gets whatever the camera's default (true
-    // 1x) mode is; object-fit: contain (style.css) then shows it in full,
-    // un-cropped, letterboxed if the aspect doesn't match the screen.
+    // ratio -- that was the actual cause of an earlier "too zoomed in, not
+    // natural 1x" bug. Plain facingMode gets whatever the camera's default
+    // (true 1x) mode is; object-fit: cover (style.css) then fills the
+    // screen with it edge-to-edge like a normal camera viewfinder, and
+    // whatever that crops is compensated for in the bearing math below
+    // instead (effectiveFovDeg), not avoided.
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: "environment" } },
       audio: false,
@@ -195,19 +204,34 @@ function frame() {
 
   // Recomputed every frame: depends on the video's decoded size (only known
   // once metadata loads) and the canvas's current CSS size (changes on
-  // resize/orientation change). Bearing math itself stays video-relative and
-  // needs no correction under object-fit: contain (it never crops); this
-  // rect is only for placing things (faces, bubbles, in-frame markers) at
-  // the right canvas pixel instead of inside a letterbox bar.
-  const videoRect = computeContainRect(video.videoWidth, video.videoHeight, canvas.clientWidth, canvas.clientHeight);
+  // resize/orientation change). object-fit: cover crops the video to fill
+  // the canvas, so two separate corrections are needed, both derived from
+  // the same crop window to stay consistent with each other:
+  const crop = computeCoverCrop(video.videoWidth, video.videoHeight, canvas.clientWidth, canvas.clientHeight);
+  // 1. Bearing math needs the narrower, actually-visible FOV, or markers
+  //    land at the wrong screen position.
+  const renderCalib: Calibration = { ...calib, camera_fov_deg: effectiveFovDeg(crop.w, calib.camera_fov_deg) };
+  // 2. Raw face-detection coordinates are normalized to the *full* video
+  //    frame, not the cropped, on-screen portion of it -- remap once here
+  //    so drawing code and the face->bearing match below can both just
+  //    treat them as plain canvas-normalized coordinates, same as before.
+  const facesOnScreen = latestFaces.map((f) => ({
+    ...f,
+    bboxNorm: {
+      x: videoNormToCropNorm(f.bboxNorm.x, crop.x, crop.w),
+      y: videoNormToCropNorm(f.bboxNorm.y, crop.y, crop.h),
+      w: f.bboxNorm.w / crop.w,
+      h: f.bboxNorm.h / crop.h,
+    },
+    centerXNorm: videoNormToCropNorm(f.centerXNorm, crop.x, crop.w),
+  }));
 
   const renderStart = performance.now();
-  const faceAnchors = computeFaceAnchors(latestFaces, calib);
+  const faceAnchors = computeFaceAnchors(facesOnScreen, renderCalib);
   drawOverlay(ctx, canvas, {
     state,
-    calib,
-    videoRect,
-    faces: latestFaces,
+    calib: renderCalib,
+    faces: facesOnScreen,
     faceAnchors,
     wsState,
     rttMs,

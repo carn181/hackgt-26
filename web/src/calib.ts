@@ -44,7 +44,11 @@ export function normalizeDeg(deg: number): number {
   return d;
 }
 
-export interface VideoRect {
+export interface CoverCrop {
+  /** Normalized [0,1] video-space window that's actually visible on screen
+   * under `object-fit: cover` -- everything outside this box is cropped off
+   * entirely (unlike `contain`, nothing is ever hidden in a letterbox bar;
+   * it just never reaches the canvas). w/h == 1 means no crop. */
   x: number;
   y: number;
   w: number;
@@ -52,32 +56,51 @@ export interface VideoRect {
 }
 
 /**
- * Where the video is actually drawn within the canvas under
- * `object-fit: contain` (uniform scale-to-fit, centered -- never crops, so
- * the camera's full nominal FOV is always genuinely on screen; the tradeoff
- * is letterbox bars instead of a crop/zoom, which is the whole point: no
- * hidden magnification, "natural 1x"). Bearing math itself
- * (bearingToScreenX/screenXToBearingDeg) stays video-relative and needs no
- * changes for this -- only code that converts a video-normalized coordinate
- * into an actual canvas pixel (drawing a face box, a bubble anchor, or an
- * in-frame marker) needs to go through this rect instead of the raw canvas
- * size, or it'll place things inside a letterbox bar instead of on the
- * video content.
+ * `cover` scales the video up until it fills the canvas in both dimensions,
+ * then centers and clips whatever overflows. This computes that visible
+ * window in the video's own normalized coordinate space, so a raw
+ * face-detection coordinate (already normalized to the full video frame)
+ * can be converted into canvas-space via `videoNormToCropNorm` below before
+ * it's multiplied by canvas width/height.
  */
-export function computeContainRect(videoW: number, videoH: number, canvasW: number, canvasH: number): VideoRect {
-  if (!videoW || !videoH || !canvasW || !canvasH) return { x: 0, y: 0, w: canvasW, h: canvasH };
-  const scale = Math.min(canvasW / videoW, canvasH / videoH);
-  const w = videoW * scale;
-  const h = videoH * scale;
-  return { x: (canvasW - w) / 2, y: (canvasH - h) / 2, w, h };
+export function computeCoverCrop(videoW: number, videoH: number, canvasW: number, canvasH: number): CoverCrop {
+  if (!videoW || !videoH || !canvasW || !canvasH) return { x: 0, y: 0, w: 1, h: 1 };
+  const scale = Math.max(canvasW / videoW, canvasH / videoH);
+  const visibleW = canvasW / scale; // in video px
+  const visibleH = canvasH / scale;
+  return {
+    x: (videoW - visibleW) / 2 / videoW,
+    y: (videoH - visibleH) / 2 / videoH,
+    w: visibleW / videoW,
+    h: visibleH / videoH,
+  };
 }
 
-export function videoXToCanvasX(xNorm: number, rect: VideoRect): number {
-  return rect.x + xNorm * rect.w;
+/**
+ * Full-video-normalized coordinate -> crop-normalized coordinate (the space
+ * `bearingToScreenX`'s output already lives in once given the FOV-corrected
+ * calibration from `effectiveFovDeg` below -- multiplying this by the
+ * canvas width/height lands exactly on screen, since the crop window fills
+ * the entire canvas by definition of `cover`).
+ */
+export function videoNormToCropNorm(vNorm: number, cropStart: number, cropSpan: number): number {
+  return (vNorm - cropStart) / cropSpan;
 }
 
-export function videoYToCanvasY(yNorm: number, rect: VideoRect): number {
-  return rect.y + yNorm * rect.h;
+/**
+ * The horizontal FOV actually visible on screen once `object-fit: cover`
+ * has cropped the camera feed to fill a differently-shaped container. Feed
+ * the raw, uncropped `camera_fov_deg` into the bearing math and every
+ * marker lands at the wrong screen position -- the visible frame covers
+ * less real-world angle than the nominal FOV claims. `cropW` is a
+ * `CoverCrop`'s `w` (both describe the same crop, so they must be derived
+ * together -- see `computeCoverCrop`).
+ */
+export function effectiveFovDeg(cropW: number, cameraFovDeg: number): number {
+  if (cropW >= 1) return cameraFovDeg; // no horizontal crop
+  const halfFovRad = (cameraFovDeg / 2) * (Math.PI / 180);
+  const effHalfFovRad = Math.atan(cropW * Math.tan(halfFovRad));
+  return (effHalfFovRad * 2 * 180) / Math.PI;
 }
 
 /**

@@ -3,6 +3,47 @@
 Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
 ticks go in README §0 with the owner+time protocol.
 
+## 2026-09-26 — back to `cover`, correctly this time (full-screen, no bars)
+
+Human tested the `contain` fix: zoom was gone, but now wanted the video to
+fill the whole screen edge-to-edge ("as per the camera's ratio") rather
+than show letterbox bars. Fair -- `contain` trades screen coverage for
+zero cropping, and that trade wasn't what was wanted; a normal camera
+app's full-bleed, gently-cropped viewfinder was. Switched back to
+`object-fit: cover`, but this time keeping the actually-important fix from
+the previous pass (the unconstrained `getUserMedia` call, no
+width/height/aspectRatio) and properly compensating for `cover`'s crop
+instead of avoiding it:
+
+- `computeCoverCrop` (`calib.ts`) computes the visible video-normalized
+  window once per frame from `video.videoWidth/Height` vs canvas size.
+- `effectiveFovDeg` is back (derived directly from that crop's width now,
+  rather than recomputing scale internally) and feeds a corrected
+  `camera_fov_deg` into a per-frame `renderCalib` -- same approach as the
+  very first viewport-fix pass.
+- New this time: raw face-detection coordinates are normalized to the
+  *full* video frame, not the visible cropped portion of it. Realized
+  partway through that this means the original pass's `computeFaceAnchors`
+  call was *always* subtly wrong under any real `cover` crop (feeding a
+  full-video-space `centerXNorm` into bearing math that expects
+  crop-space), just never caught because it hadn't been tested against
+  real cropping + real faces together yet. Fixed by remapping
+  `latestFaces` from full-video-normalized to crop-normalized exactly once
+  per frame in `main.ts` (`videoNormToCropNorm`), before either the
+  face->bearing matching or any drawing sees them -- so `render.ts` needed
+  no rect-awareness at all and reverted cleanly to its pre-`contain` form
+  (plain `xNorm * canvasSize` math throughout).
+
+Bonus: a face whose remapped coordinate falls outside [0,1] (i.e. it was
+cropped out of the visible frame) now naturally lands off-canvas instead
+of needing an explicit visibility check -- verified this and the crop/FOV
+math by hand (portrait-phone case: heavy horizontal crop, FOV correctly
+reduced to ~19° same as the original pass's numbers; landscape-laptop
+case: vertical crop only, FOV unchanged at 62°; a face 0.05 from the video
+edge under heavy crop maps to a negative, correctly off-screen, coordinate).
+Real on-phone confirmation that it now fills the screen without the
+earlier hardware-zoom problem still needs the human's camera.
+
 ## 2026-09-26 — real fix for phone camera zoom: contain, not a crop correction
 
 Human re-test on the phone (two people, multi-speaker) confirmed the
