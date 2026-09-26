@@ -332,6 +332,14 @@ def report(args: argparse.Namespace, bench: Bench, segments: list[tuple[Path, st
         health = {"error": str(exc)}
 
     ar = [b - a for a, b in zip(bench.arrivals, bench.arrivals[1:])]
+    # Stimulus check: every event carries the segment SNR the backend measured.
+    # Without this, a muted sink or a mis-routed player produces a confident
+    # "the array cannot hear it" conclusion from a run where nothing was audible
+    # (which is exactly how this tool's author once mis-diagnosed a working
+    # microphone). Below the threshold the run is reported as inconclusive.
+    snrs = [float(m["snr_db"]) for m in bench.events if isinstance(m.get("snr_db"), (int, float))]
+    best_snr = max(snrs) if snrs else None
+    conclusive = best_snr is not None and best_snr >= args.require_snr_db
     out = {
         "url": args.url,
         "duration_s": args.duration,
@@ -340,6 +348,12 @@ def report(args: argparse.Namespace, bench: Bench, segments: list[tuple[Path, st
         "messages": bench.by_type,
         "events": len(bench.events),
         "bytes": bench.bytes,
+        "stimulus": {
+            "best_snr_db": best_snr,
+            "require_snr_db": args.require_snr_db,
+            "conclusive": conclusive,
+            "sink_warning": bench.warning,
+        },
         "rtt_ms": {"p50": _pct(bench.rtts, 50), "p95": _pct(bench.rtts, 95), "n": len(bench.rtts)},
         "backend_onset_to_emit_ms": {"p50": _pct(internal, 50), "p95": _pct(internal, 95)},
         "transport_emit_to_client_ms": {"p50": _pct(transport, 50), "p95": _pct(transport, 95)},
@@ -365,6 +379,14 @@ def report(args: argparse.Namespace, bench: Bench, segments: list[tuple[Path, st
     if from_play:
         print(f"play command→client (incl. player)    {_stats(from_play)}")
     print(f"arrival gap: p50 {_pct(ar, 50) * 1e3:.1f} ms max {(max(ar) * 1e3 if ar else 0):.1f} ms")
+    if best_snr is None:
+        print(f"stimulus: no event carried an SNR — nothing measurable arrived")
+    else:
+        verdict = "OK" if conclusive else "INCONCLUSIVE"
+        print(f"stimulus: best event SNR {best_snr:.1f} dB (need >= {args.require_snr_db:.0f}) -> {verdict}")
+        if not conclusive:
+            print("          the injected sound barely rose above the room: check the sink routing/volume")
+            print("          and that the backend's --device points at the microphone you think it does")
     print(f"health: {json.dumps({k: v for k, v in health.items() if k != 'source'} if health else {})}")
     if isinstance(health.get("source"), dict):
         print(f"source: {json.dumps(health['source'])}")
@@ -402,7 +424,9 @@ def report(args: argparse.Namespace, bench: Bench, segments: list[tuple[Path, st
     if bench.errors:
         print(f"\nproblems: {bench.errors}")
     print()
-    return 0 if bench.events else 1
+    if not bench.events:
+        return 1
+    return 0 if conclusive else 3
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -415,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--inject-side", default="both", choices=["both", "left", "right", "flip"],
                    help="which speaker plays it; `flip` runs left then right (the sign-flip test)")
     p.add_argument("--shots", type=int, default=3)
+    p.add_argument("--require-snr-db", type=float, default=12.0,
+                   help="minimum event SNR for the run to count as conclusive (exit 3 otherwise)")
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
     try:

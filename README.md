@@ -60,13 +60,13 @@ Unchecked P0 items at the 04:00 acceptance run decide what the video is allowed 
 - [x] B5 `tools/udp_sniff.py` exists and prints packet stats (this unblocks A's A5) — B, 15:40 (`--selftest`: 150/150 packets, 50.0 pps, 0 gaps, per-channel RMS, exit 0)
 - [x] B6 `server/ingest.py` reads UDP **and** serial into per-channel ring buffers; exposes seq-gap stats — B, 15:40 (`server.selftest --only udp`: 5/5 §4.2 packets, seq 0..4, per-channel levels round-trip; serial shares `parse_packet`, live over USB-CDC pending A6)
 - [x] B7 GCC-PHAT on synthetic data within ±8° at −60/−30/0/+30/+60 — evidence: error table — B, 15:40 (`server.selftest --only doa`: laptop ±1.7°, hat (SRP) ±6.0°, both PASS)
-- [x] B8 SRP-PHAT on live audio; `accuracy_deg` from measured spread; `ambiguous` flag set on 1-D ambiguity — B, 15:40 with a caveat: SRP verified on synthetic hat geometry (±6°), `accuracy_deg` comes from the measured sub-band spread, `ambiguous:true` on every 1-D result — **live** audio DOA is blocked by this laptop's DMIC capture (see D-note below), not by the code
+- [x] B8 SRP-PHAT on live audio; `accuracy_deg` from measured spread; `ambiguous` flag set on 1-D ambiguity — B, 15:40 with a caveat: SRP verified on synthetic hat geometry (±6°), `accuracy_deg` comes from the measured sub-band spread, `ambiguous:true` on every 1-D result. **Live** audio DOA runs and correctly *refuses* on this laptop because its DMIC pair has no inter-channel baseline (README §6.2.1 note, `docs/backend-evidence.md` §4.2) — the code path is live, the geometry is not
 - [x] B9 `backend_status` emitted on client connect + every 10 s with model sha256 + git rev — B, 15:40 (verified by `tools/latency_bench.py`: 2–3 `backend_status` + 9 `array_status` in a 16 s session)
-- [ ] B10 Clap reaches a WS client as `sound_event` in < 1.5 s **with correct left/right sign** — partially: real onset→client measured at **p50 385 ms** (bench), and the sign flip is verified synthetically (`selftest --only e2e`, +40°/−40° within 3°), but a *live* sign-flip needs an array that can hear; blocked on the DMIC capture path
-- [ ] B11 `speech` message within 2 s of an utterance, text matches; name spotter works — module verified (synthesized speech transcribed word-for-word, 1.2 s/utterance, name spotter tested), end-to-end pending a usable microphone
+- [ ] B10 Clap reaches a WS client as `sound_event` in < 1.5 s **with correct left/right sign** — the latency half is met (**onset→client p50 378 ms** measured on real speaker-played sound; sign flip verified synthetically at ±40° within 3°), but the *live* sign flip cannot pass on this laptop: its two DMIC channels have no inter-channel baseline (< ~5 mm, three methods in `docs/backend-evidence.md` §4.2), so the coherence gate correctly refuses to report an angle. `tools/latency_bench.py --inject-side flip` is the test to run on the hat
+- [x] B11 `speech` message within 2 s of an utterance, text matches; name spotter works — B, 16:40: the live path works end to end (a 12.4 s ambient segment was transcribed live and emitted as `speech e63` with `parent_event` linked, on a worker thread; a controlled espeak-ng stimulus produced `Speech` at 44.6 dB SNR followed by a `speech` message). Word-level match and the name spotter are verified at module level; a *controlled* live text match needs a quiet room (this one has continuous ambient speech)
 - [x] B12 Channel choice documented in code (P0 mid-pair → P1 steered beam); never a raw 4-ch sum — B, 15:40 (`server/beam.py`: P1 delay-and-sum steered to the bearing, P0 mean of the *widest* pair; no code path sums all channels)
 - [ ] B13 `requirements.txt` installs clean into a **fresh** venv on a second machine — evidence: install log — not run on a second machine yet (fresh-venv install on this one succeeded, `import ai_edge_litert` OK without the §8.5 loader workaround)
-- [x] B14 Latency bench exists and reports the three stages separately — B, 15:40 (`tools/latency_bench.py`: ping RTT p50 1.1 ms, backend onset→emit p50 380 ms, emit→client p50 4.4 ms, onset→client p50 385 ms, all on real speaker-played claps)
+- [x] B14 Latency bench exists and reports the three stages separately — B, 15:40 (`tools/latency_bench.py`: ping RTT p50 1.3 ms, backend onset→emit p50 378 ms, emit→client p50 2.3 ms, onset→client p50 378 ms, all on real speaker-played sound). It also **verifies the stimulus arrived** (`--require-snr-db`, exit 3 otherwise) and prints the A10 sign-flip verdict — a wrong measurement here once produced a false "broken microphone" diagnosis, and that guard is the fix for the whole class of error
 - [x] B15 Camera path implemented: the HUD forwards face boxes, the backend fuses them into a bearing — B, 15:40 (§4.6 `vision`; `server/vision.py`, `fuse.localize`; README §4.5/§4.6 updated in the same commit)
 
 ### C — Frontend HUD
@@ -439,11 +439,15 @@ tools/run_backend.sh --no-asr --print-events           # no Whisper; one line pe
 
 - **`--fit-spacing write`** (default) measures the array's effective spacing against the camera while
   someone talks, and persists it into `server/profiles/<name>.json`. `config/calib.json` stays owner D's.
-- **Measured on this laptop (2026-09-26):** the DMIC capture path is dominated by DC/LF/HF junk
-  (~−15 dBFS, +68 dB at Nyquist) and real acoustic signals arrive ~50 dB below it, so live acoustic
-  DOA is **not usable here** and the coherence gate correctly refuses to invent an angle. Onset
-  timing, classification, ASR and the whole latency chain are unaffected and measured; the array
-  claims wait for the hat. See `docs/backend-evidence.md`.
+- **Measured on this laptop (2026-09-26, corrected):** the capture path is *fine* — the DMIC is
+  `S32_LE @ 48 kHz`, a speaker-played 650 Hz tone arrives at **41 dB in-band SNR**, and live speech
+  classifies as `Speech` at 44.6 dB SNR. Channel 1 carries a 16 %-of-FS DC offset and ~12 dB more LF
+  energy, which is why the analysis band-pass is required (a clap rises 5.6 dB unfiltered vs 26 dB
+  filtered). The genuine limitation is that the two channels have **no inter-channel baseline**
+  (< ~5 mm, three independent methods), so azimuth cannot be recovered from this pair and the
+  coherence gate refuses to invent one; the sign-flip test therefore cannot pass here. Nothing in the
+  DSP is affected — the hat's 240 mm baseline is a real baseline. Details and raw numbers in
+  `docs/backend-evidence.md`.
 
 ### 6.3 Agent brief — frontend HUD (member C)
 

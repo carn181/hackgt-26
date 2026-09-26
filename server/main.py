@@ -37,7 +37,7 @@ from .beam import analysis_channel, delay_and_sum
 from .calib_fit import SpacingFit
 from .config import available_profiles, load_profile, write_profile_spacing
 from .detect import Onset, OnsetDetector, Offset
-from .fuse import CLASSIFY_WINDOW, DEFAULT_TAIL_S, DOA_TAIL_S, DOA_WINDOW, FusionEngine
+from .fuse import ASR_MAX_SECONDS, CLASSIFY_WINDOW, DEFAULT_TAIL_S, DOA_TAIL_S, DOA_WINDOW, FusionEngine
 from .ingest import BandPass, microphones_health, open_source
 from .ring import RingBuffer
 from .vision import FACE_TTL_S, VisionTracker
@@ -320,7 +320,7 @@ class Backend:
             lag_correction=(self.fit.sin_bias(), self.fit.scale()),
         )
         self._observe_for_spacing(seg, face, msg)
-        if self.fusion.should_send(msg):
+        if self.fusion.is_reportable(msg["class"]) and self.fusion.should_send(msg):
             self.hub.publish(msg)
         self._log_event(msg, t_now, t_onset)
         self._maybe_ready(check_every=10)
@@ -375,6 +375,8 @@ class Backend:
         rate = self.rate
         start = max(0, off.onset.index - int(round(0.15 * rate)))
         end = min(self.ring.written, off.index + int(round(0.25 * rate)))
+        # Bound the worker's occupancy: transcribe the head of a long segment.
+        end = min(end, start + int(round(ASR_MAX_SECONDS * rate)))
         if end - start < int(0.3 * rate):
             return
         data = self._window(start, end - start)

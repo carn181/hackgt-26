@@ -55,8 +55,18 @@ MERGE_DEG = 12.0
 NO_BEARING_ACCURACY = 180.0
 # Relative tolerance for "the camera agrees with the array" (a resolved half-space).
 HALF_SPACE_TOL_DEG = 35.0
-# Classes whose segment is worth sending to Whisper.
-_SPEECHY = ("speech", "conversation", "narration", "child speech", "singing", "whisper")
+# Classes whose segment is worth sending to Whisper. YAMNet names a synthetic
+# voice `Synthesizer` (espeak-ng lands here) and a real one `Speech`, so the test
+# is on the class *family*, not on the literal word.
+_SPEECHY = ("speech", "conversation", "narration", "child speech", "singing", "whisper", "synthesizer")
+# A detector that fires on a loud room occasionally hands us something the
+# classifier calls silence. Reporting "Silence" as a sound event is noise in the
+# HUD (SoundWatch's overload finding), and the class itself says the event is
+# empty — so it is dropped rather than forwarded.
+_NON_EVENTS = ("silence",)
+# Longest audio handed to the transcriber. A 12 s music/room segment costs ~14 s
+# of CPU at int8 (measured); beyond this the tail is not worth the worker's time.
+ASR_MAX_SECONDS = 10.0
 
 
 @dataclass
@@ -265,6 +275,10 @@ class FusionEngine:
         # Onset → message: the number the README's 1.5 s budget is about.
         self.latencies_ms.append((t_now - t_onset) * 1e3)
         return msg, seg
+
+    def is_reportable(self, cls: str) -> bool:
+        """False for classes that describe the absence of a sound."""
+        return cls.strip().lower() not in _NON_EVENTS
 
     def wants_speech(self, cls: str, duration_s: float) -> bool:
         if duration_s < 0.30:
