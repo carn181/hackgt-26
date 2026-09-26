@@ -30,6 +30,9 @@ export interface RenderOptions {
   calib: Calibration;
   faces: DetectedFace[];
   faceAnchors: Map<string, FaceAnchor | null>; // speech id -> matched face (or null = no face)
+  /** Which face's trackId (faces.ts) the debounced speaker-lock currently
+   * holds, if any -- surfaced so the face-box overlay can show it live. */
+  lockedSpeakerTrackId: number | null;
   wsState: ConnState;
   rttMs: number | null;
   fps: number;
@@ -49,7 +52,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasEle
   const size: Size = { w: canvas.clientWidth, h: canvas.clientHeight };
   ctx.clearRect(0, 0, size.w, size.h);
 
-  drawFaces(ctx, size, opts.faces);
+  drawFaces(ctx, size, opts.faces, opts.lockedSpeakerTrackId);
 
   const urgent = state.hasUrgent();
   if (urgent) drawUrgentFrame(ctx, size);
@@ -431,22 +434,45 @@ function drawTailedBubble(
   ctx.restore();
 }
 
-function drawFaces(ctx: CanvasRenderingContext2D, size: Size, faces: DetectedFace[]) {
+/**
+ * Face boxes plus a live readout of the numbers the speaker-lock actually
+ * decides on (jawOpen score, its recent swing, and which face -- if any --
+ * currently holds the lock). Added specifically to stop guessing at
+ * mouth-activity thresholds blind: this makes the real per-face numbers
+ * visible during a live test instead of only inferring them from bubble
+ * behavior after the fact.
+ */
+function drawFaces(
+  ctx: CanvasRenderingContext2D,
+  size: Size,
+  faces: DetectedFace[],
+  lockedSpeakerTrackId: number | null
+) {
   ctx.save();
-  ctx.strokeStyle = "rgba(255,255,255,0.35)";
   ctx.lineWidth = 1;
+  ctx.font = `10px ${PIXEL_FONT}`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
   for (const f of faces) {
     const x = f.bboxNorm.x * size.w;
     const y = f.bboxNorm.y * size.h;
     const w = f.bboxNorm.w * size.w;
     const h = f.bboxNorm.h * size.h;
+    const isLocked = f.trackId === lockedSpeakerTrackId;
+
+    ctx.strokeStyle = isLocked ? URGENCY_COLOR.normal : "rgba(255,255,255,0.35)";
+    ctx.lineWidth = isLocked ? 2.5 : 1;
     ctx.strokeRect(x, y, w, h);
+
     if (f.mouthActive) {
       ctx.fillStyle = "#7CFC9A";
       ctx.beginPath();
       ctx.arc(x + w / 2, y + h + 8, 3, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    const label = `#${f.trackId} open:${f.mouthOpenScore.toFixed(2)} swing:${f.mouthActivity.toFixed(2)}${isLocked ? " SPEAKING" : ""}`;
+    outlinedText(ctx, label, x, y - 4, isLocked ? URGENCY_COLOR.normal : "#fff", 2);
   }
   ctx.restore();
 }

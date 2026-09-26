@@ -296,15 +296,26 @@ async function detectFacesIfReady() {
       // it can produce a camera-backed bearing (there is one webcam and this page
       // owns it). Throttled to 10 Hz — the backend ages frames out after 0.6 s,
       // so faster would only be traffic.
+      //
+      // `xc`/`w` must be in on-screen (crop-normalized) space, not raw video
+      // space: the backend's inverse projection (README §4.6) assumes `xc` is
+      // the face's fraction of the *visible* camera frame, matching what a
+      // person looking at the HUD actually sees. object-fit: cover crops the
+      // raw video before it reaches the screen, so the two disagree whenever
+      // there's real cropping (common on a phone) -- sending the raw
+      // coordinate here was silently feeding the backend a wrong bearing
+      // whenever that happened, independent of the client's own rendering
+      // (which already goes through this same correction, see frame() below).
       const nowMs = performance.now();
       if (nowMs - lastVisionSentMs >= 100) {
         lastVisionSentMs = nowMs;
+        const crop = computeCoverCrop(video.videoWidth, video.videoHeight, canvas.clientWidth, canvas.clientHeight);
         ws.send({
           type: "vision",
           t: nowMs / 1000,
           faces: latestFaces.map((f) => ({
-            xc: f.centerXNorm,
-            w: f.bboxNorm.w,
+            xc: videoNormToCropNorm(f.centerXNorm, crop.x, crop.w),
+            w: f.bboxNorm.w / crop.w,
             mouth: f.mouthOpenScore,
             mouthActive: f.mouthActive,
           })),
@@ -356,6 +367,7 @@ function frame() {
     calib: renderCalib,
     faces: facesOnScreen,
     faceAnchors,
+    lockedSpeakerTrackId,
     wsState,
     rttMs,
     fps,
