@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Models and big binaries (fetch with README §8.2)
+models/
+*.tflite
+*.onnx
+
+# Captures / media
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.mp4
+*.mov
+*.webm
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
