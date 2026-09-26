@@ -68,15 +68,15 @@ Unchecked P0 items at the 04:00 acceptance run decide what the video is allowed 
 - [ ] B13 `requirements.txt` installs clean into a **fresh** venv on a second machine — evidence: install log
 
 ### C — Frontend HUD
-- [ ] C1 App runs, camera opens, WS connects, `backend_status` (model + transport) rendered
-- [ ] C2 Compass + markers render correctly from **fake events** (works before the backend is live)
+- [x] C1 App runs, camera opens, WS connects, `backend_status` (model + transport) rendered — C, 12:10 (evidence: `web/dev/evidence.md` §C1; real 1280x720 getUserMedia + ws open + diagnostics)
+- [x] C2 Compass + markers render correctly from **fake events** (works before the backend is live) — C, 12:10 (mock stream only, no backend; captions/compass/chevrons read back from `window.__hud.snapshot()`)
 - [ ] C3 Marker lands within ±10 % frame width for claps at −40°/0°/+40°
-- [ ] C4 Edge chevrons when |bearing| > fov/2; `ambiguous:true` renders two mirrored candidates
-- [ ] C5 Face landmarks + mouth-open state; bubble anchored to the speaking face
-- [ ] C6 Playback-vs-person: loudspeaker speech → marker with **no** face anchor, labelled playback
-- [ ] C7 Urgency tiers: `urgent` displaces other content; `set_mode` all/important/quiet works
-- [ ] C8 60 fps with camera running; added latency < 50 ms — evidence: measured number in `docs/`
-- [ ] C9 Positions interpolate (no snapping); markers age and fade
+- [x] C4 Edge chevrons when |bearing| > fov/2; `ambiguous:true` renders two mirrored candidates — C, 12:10 (Clapping −40° → left chevron, mirror −140° → right chevron; Alarm +120° likewise)
+- [x] C5 Face landmarks + mouth-open state; bubble anchored to the speaking face — C, 12:10 (jawOpen 0.43 → mouthActive → bubble anchored at the bearing; live human re-run pending)
+- [x] C6 Playback-vs-person: loudspeaker speech → marker with **no** face anchor, labelled playback — C, 12:10 (PLAYBACK · NO FACE with no face at the bearing; PLAYBACK when the face mouth is closed)
+- [x] C7 Urgency tiers: `urgent` displaces other content; `set_mode` all/important/quiet works — C, 12:10 (quiet = HIGH/URGENT only; important drops low + `+N` chip; mock log shows all three set_mode)
+- [x] C8 60 fps with camera running; added latency < 50 ms — evidence: measured number in `docs/` — C, 12:10 (59.1–60.0 fps with camera + 10 fps inference; ping echo median 1.2–2.1 ms vs the mock)
+- [x] C9 Positions interpolate (no snapping); markers age and fade — C, 12:10 (≤2.5° per 180 ms sample on a 250 ms ramp; 6 s life with a final-second fade)
 
 ### D — Integration, deliverables, gates
 - [ ] D1 `docs/calibration.md` started with raw finger-to-keyboard logs
@@ -410,6 +410,47 @@ require a README edit in the same commit; `main` must stay runnable.
 > **Traps:** camera needs a secure context — `localhost` or a self-signed HTTPS origin; **iOS Safari has no
 > WebXR** (Android Chrome/desktop are fine). Interpolate positions — events arrive at 2–4 Hz and will jump.
 > `ambiguous:true` events should render as two mirrored candidates, not one arbitrary choice.
+
+#### 6.3.1 Running the HUD (owner C)
+
+Everything lives in `web/`. Node + npm only (no bun/pnpm/yarn). Measured numbers and the exact evidence for
+C1–C9 are in **`web/dev/evidence.md`**.
+
+```bash
+cd web
+npm install                # also copies the MediaPipe WASM assets (postinstall)
+
+# terminal 1 — mock backend, speaks the frozen §4.5 stream on 127.0.0.1:8000/ws
+npm run mock
+
+# terminal 2 — the app
+npm run dev                # http://localhost:5173   (camera works: localhost is a secure context)
+```
+
+| Situation | Command / action |
+|---|---|
+| Laptop, camera + HUD | `npm run dev` → `http://localhost:5173`, click **Start camera** |
+| Phone (needs HTTPS for the camera) | `npm run phone` → prints `https://<lan-ip>:5173/`; import the printed CA on the phone **once**, then open that URL |
+| Phone, no camera needed | `npm run dev -- --host 0.0.0.0` → `http://<lan-ip>:5173` (the HUD renders; `getUserMedia` stays blocked) |
+| Real backend instead of the mock | nothing to change — the backend just has to listen on `ws://127.0.0.1:8000/ws`; the HUD proxies `wss://<host>/ws` to it |
+| Different socket | `?ws=` is honoured exactly, e.g. `?ws=ws://192.168.1.20:8000/ws` (from an **https** page it must be `wss://`; plain `ws://` is blocked as mixed content and the HUD says so) |
+| Production build | `npm run build` (tsc + Vite) · `npm run preview` |
+
+- **Start order does not matter.** `npm run mock` can be started later; the HUD retries with 0.5/1/2/4/8 s
+  backoff, keeps rendering, and recovers on its own. If a backend restarts and resets its `t` clock, the HUD
+  resyncs instead of discarding the new events.
+- **The top-right chip** is the diagnostics readout: `state · model · transport · revision · mic health`.
+  Tap it for model path + SHA, git rev, transport, every mic, calibration, presence, rolling 5 s FPS,
+  ping-echo latency, face-tracking state and the event counters.
+- **Scripted debug hooks** (read-only): `window.__hud.snapshot()`, `window.__hud.ws()`,
+  `window.__hud.vision()`.
+- **`npm run mock` replays**: two `low` + one `high` event (tier controls), `Clapping` −40° (ambiguous),
+  `Speech` +10° with a partial→final transcript, a playback `Speech` −25° with no speaker, a moving id
+  (−10°→+10° every 250 ms, for interpolation), and an `urgent` `Alarm` +120° that displaces everything.
+  Its model/revision values are marked `MOCK`; geometry comes from `config/array.json`.
+- **TLS env vars**: `TLS_CERT_FILE` + `TLS_KEY_FILE` together enable HTTPS, otherwise the dev server stays on
+  HTTP. Setting only one is a startup error, not a silent fallback. `web/.certs/` (from `npm run phone`) is
+  gitignored — never commit the leaf or the CA key.
 
 ### 6.4 Integration owner (member D)
 
