@@ -526,8 +526,10 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"array geometry: one of {', '.join(available_profiles())}",
     )
     p.add_argument("--names", default="", help="comma-separated names to spot in speech")
-    p.add_argument("--min-confidence", type=float, default=0.30, help="top-class score gate")
-    p.add_argument("--min-snr", type=float, default=12.0, help="segment SNR gate in dB (backend uses 12.0)")
+    p.add_argument("--min-confidence", type=float, default=0.0,
+                   help="top-class score gate (default 0 = transcribe anything speech-like, matching the backend)")
+    p.add_argument("--min-snr", type=float, default=0.0,
+                   help="segment SNR gate in dB (default 0 = off, matching the backend)")
     p.add_argument("--asr-model", default="base.en")
     p.add_argument("--no-classify", action="store_true", help="skip YAMNet: VAD + ASR only")
     p.add_argument("--no-asr", action="store_true", help="VAD + class only")

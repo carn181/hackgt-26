@@ -77,25 +77,36 @@ _NON_EVENTS = (
     "white noise",
     "pink noise",
 )
-# Minimum segment SNR for an event to be worth reporting at all. The detector's
-# own floor is ~-68 dB here and room bumps clear 9 dB above it, which is how the
-# log filled up with "Silence" events at confidence 0.1-0.5.
-MIN_EVENT_SNR_DB = 12.0
-# Below this top-class score the label is a guess (a chair creak reads "Fart" or
-# "Horse"), and the project's rule is that a wrong label is worse than none. Real
-# speech in this room measures 0.41-0.50, a speaker-played tone 0.89-0.94, so the
-# floor costs nothing that would have been displayed anyway: the HUD fades a
-# marker by confidence, and `urgency_for` already downgrades below 0.35.
-MIN_EVENT_CONFIDENCE = 0.30
+# `DROP_CLASSES` above is empty by default; this is the list you would use.
+# --- reporting gates -------------------------------------------------------
+# These were added to fight a log full of `Silence` events, and that was the wrong
+# diagnosis: the *microphone* was faulty (channel 1 carried a 36%-of-full-scale DC
+# offset and a sub-100 Hz rumble 31 dB above channel 0's, so the detector fired on
+# room bumps and the classifier honestly answered "Silence"). With a working mic
+# the events are real, and suppressing them throws away exactly what a
+# sound-awareness system exists to show.
+#
+# They stay in the code, defaulted OFF, because they are the right tool for a
+# genuinely noisy room — and the overload control that *should* be used first is
+# the urgency tiers (the HUD collapses `low`, `set_mode important/quiet` filters
+# server-side), not dropping events before anyone sees them.
+MIN_EVENT_SNR_DB = 0.0
+MIN_EVENT_CONFIDENCE = 0.0
+# Classes that describe no sound at all. Off by default for the same reason; kept
+# for a deployment where "Silence" events are pure noise.
+DROP_CLASSES: tuple[str, ...] = ()
 # A re-classification of a finished segment replaces the first label when the new
 # one is a different class at least this confident (see `FusionEngine.reclassify`).
 MIN_RECLASSIFY_CONFIDENCE = 0.40
 # Longest window taken for the loudest-window re-classification.
 RECLASSIFY_SPAN_S = 0.975
 # A transcript is only attempted when the event looks like real speech: the class
-# must be in the speech family *and* the segment must be clean and confident.
-MIN_SPEECH_CONFIDENCE = 0.35
-MIN_SPEECH_SNR_DB = 15.0
+# must be in the speech family. The confidence/SNR gates are off by default for the
+# same reason as the event gates above (they were tuned against a faulty mic); the
+# anti-fabrication guard that *stays* is Whisper's own `no_speech_prob` in asr.py,
+# because an invented caption is worse than a missing one.
+MIN_SPEECH_CONFIDENCE = 0.0
+MIN_SPEECH_SNR_DB = 0.0
 # Longest audio handed to the transcriber. Measured: a 10 s segment cost 11.9 s of
 # CPU at int8, and long segments are usually room noise rather than one utterance.
 ASR_MAX_SECONDS = 6.0
@@ -129,6 +140,8 @@ class FusionEngine:
         mode: str = "all",
         classify_tail_s: float = DEFAULT_TAIL_S,
         min_confidence: float = MIN_EVENT_CONFIDENCE,
+        min_snr_db: float = MIN_EVENT_SNR_DB,
+        drop_classes: tuple[str, ...] = DROP_CLASSES,
     ):
         self.prof = prof
         self.rate = int(rate or prof.rate_hz)
@@ -140,6 +153,8 @@ class FusionEngine:
         self.mode = mode
         self.classify_tail_s = float(classify_tail_s)
         self.min_confidence = float(min_confidence)
+        self.min_snr_db = float(min_snr_db)
+        self.drop_classes = tuple(c.strip().lower() for c in drop_classes)
         self._eid = 0
         self._sid = 0
         # Backend-clock seconds at the last message; the pipeline sets it each block
@@ -358,20 +373,19 @@ class FusionEngine:
         return msg
 
     def is_reportable(self, msg: dict) -> bool:
-        """False for classes that describe no sound, and for weak segments.
+        """Everything is reported by default; the gates exist for noisy rooms.
 
-        The SNR and confidence gates are the ones that matter in practice: a
-        detector working against a -68 dB floor fires on every room bump, and the
-        classifier answers "Silence" or a guess like "Horse" at low confidence.
-        That is a real measurement of nothing, not an event. Anything dropped here
-        is logged as suppressed so the terminal and the wire agree.
+        `min_confidence`, `min_snr_db` and `drop_classes` all default to "off", so
+        every detected segment reaches the HUD and the tier system is what keeps
+        the display readable. Turn them on (`--min-confidence`, `--min-snr-db`)
+        when the room itself is the problem rather than the events.
         """
-        if str(msg.get("class", "")).strip().lower() in _NON_EVENTS:
+        if str(msg.get("class", "")).strip().lower() in self.drop_classes:
             return False
         if float(msg.get("confidence", 1.0)) < self.min_confidence:
             return False
         snr = msg.get("snr_db")
-        return not (isinstance(snr, (int, float)) and snr < MIN_EVENT_SNR_DB)
+        return not (isinstance(snr, (int, float)) and snr < self.min_snr_db)
 
     def wants_speech(self, cls: str, duration_s: float, confidence: float = 1.0, snr_db: float | None = None) -> bool:
         if duration_s < 0.30:

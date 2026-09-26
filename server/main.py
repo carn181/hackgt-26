@@ -45,6 +45,7 @@ from .fuse import (
     DOA_TAIL_S,
     DOA_WINDOW,
     MIN_EVENT_CONFIDENCE,
+    MIN_EVENT_SNR_DB,
     RECLASSIFY_SPAN_S,
     FusionEngine,
 )
@@ -161,6 +162,7 @@ class Backend:
             mode=args.mode,
             classify_tail_s=args.classify_tail,
             min_confidence=args.min_confidence,
+            min_snr_db=args.min_snr_db,
         )
         self.transcriber = None
         self._asr_q: queue.Queue = queue.Queue(maxsize=4)
@@ -790,7 +792,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--classify-tail", type=float, default=DEFAULT_TAIL_S,
                    help="seconds of sound to wait for before classifying an onset")
     p.add_argument("--min-confidence", type=float, default=MIN_EVENT_CONFIDENCE,
-                   help="drop events whose top class scores below this (0 = report everything)")
+                   help="drop events whose top class scores below this (default 0 = report everything)")
+    p.add_argument("--min-snr-db", type=float, default=MIN_EVENT_SNR_DB,
+                   help="drop events whose segment SNR is below this dB (default 0 = report everything)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--ws-port", type=int, default=8000)
     p.add_argument("--mode", default="all", choices=["all", "important", "quiet"])
