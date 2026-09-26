@@ -4,7 +4,7 @@ A cap with a 4-microphone array that finds **where** a sound came from, identifi
 both to a d/Deaf or hard-of-hearing wearer — direction on an LED strip on the brim, and a game-style HUD
 overlay (bearing marker, class label, speech bubbles anchored to faces) on a phone/laptop camera view.
 
-**Status: nothing built yet.** Timestamp of this revision: **Sat 2026-09-26 10:35 EDT**.
+**Status: nothing built yet.** Timestamp of this revision: **Sat 2026-09-26 11:15 EDT**.
 
 | Clock | |
 |---|---|
@@ -512,9 +512,20 @@ path, and the import name (`ai_edge_litert`) differs from the package name.
   only real check is `import ai_edge_litert` succeeding.
 - Verify the venv actually imports before claiming setup: `python -c "import ai_edge_litert, numpy; print('ok')"`.
 
+### 8.6 Toolchain preflight (checked on the dev laptop, Sat 11:11)
+
+| Stream | Found | Action required |
+|---|---|---|
+| Backend (B) | `python3` 3.13, `uv`, `git` ✅ | `uv venv .venv && uv pip install -r requirements.txt` |
+| Frontend (C) | `node`, `npm`, `npx` ✅ — **no bun/pnpm/yarn** | npm + Vite: `npm create vite@latest web -- --template vanilla-ts` |
+| ESP32 (A) | **no `pio` / `arduino-cli` / `esptool` / `idf.py` / `picocom` / `screen`** | `uv tool install platformio` (cleanest on NixOS), then `pio device list`. **First ESP32-S3 build downloads ~1 GB of toolchain — start it now, not at 02:00.** |
+| Serial access | user is **not in `dialout`** (groups: `users wheel networkmanager kvm wireshark`) | quick: `sudo chmod 666 /dev/ttyACM0` after plugging in (repeat after every replug) · proper: add `dialout` to `users.users.<name>.extraGroups` and rebuild, or a udev rule pinning the board's VID:PID to `MODE="0666"` |
+| Disk | 22 GB free ✅ | fine (toolchain ≈1 GB, node_modules ≈200 MB) |
+| Dev board | no `/dev/ttyACM*` or `/dev/ttyUSB*` present at check time | plug it in and confirm with `pio device list` before claiming A1 |
+
 ---
 
-## 9. Plan from 10:35 Saturday
+## 9. Plan from 11:15 Saturday
 
 **Scope ladder — build top-down, cut bottom-up:**
 
