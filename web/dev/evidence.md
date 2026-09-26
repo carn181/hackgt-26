@@ -3,6 +3,33 @@
 Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
 ticks go in README §0 with the owner+time protocol.
 
+## 2026-09-26 — attempted: face detection in a Web Worker (reverted)
+
+Tried moving `FaceLandmarker` off the main thread (`vision.worker.ts` +
+a `faces.ts` host wrapper posting transferred `ImageBitmap`s, capped at one
+in flight), mirroring the pattern `origin/ryan-frontend` uses. Wired up
+correctly (Vite split it into its own chunk; main bundle dropped from
+~168KB to ~13KB as expected) and the GPU→CPU delegate fallback triggered
+correctly, but *both* delegates failed identically with `Error: ModuleFactory
+not set` from inside the worker -- a WASM-loader-internal error, not a
+network/CORS one. Confirmed this is not a Vite dev-server quirk (identical
+failure against a real `vite build` + `vite preview` production build).
+Tried shimming `self.window = self` before touching the library (a known
+workaround for libraries that do `typeof window` environment detection and
+silently pick a broken loading path in a worker) -- no change.
+
+Given main-thread detection is already proven at 100+ fps on the actual
+phone (see below), and this is a perf nice-to-have rather than a P0/P1
+item, spent a fixed amount of time on it and then **reverted** rather than
+keep digging with an open-ended time cost — `git checkout` on `faces.ts`/
+`main.ts`, deleted `vision.worker.ts`. If someone wants to pick this back
+up: the failure is almost certainly inside the WASM glue file that
+`FilesetResolver.forVisionTasks` fetches at runtime from the CDN
+(`.../wasm/*_internal.js`), not in anything local to this repo -- worth
+trying a different `@mediapipe/tasks-vision` version, or Ryan's exact
+worker setup on `origin/ryan-frontend` (`web/src/vision.worker.ts`, `web/src/vision.ts`)
+since his apparently does work, to see what he did differently.
+
 ## 2026-09-26 — phone viewport fix + real horizontal-FOV correction
 
 Per human report on the actual phone: "too zoomed in, can't see the bottom
