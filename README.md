@@ -381,6 +381,9 @@ require a README edit in the same commit; `main` must stay runnable.
 
 ### 6.3 Agent brief — frontend HUD (member C)
 
+> **Session starter:** paste `prompts/frontend.md` as the first message of a fresh session — it is this brief
+> plus the paste-ready prompt (scope, contract, render rules, build order, evidence requirements).
+>
 > Read §3, §4.5, §4.6 first. You own `web/**`.
 >
 > **Deliverable:** Vite + TS app that opens the camera, connects to `ws://127.0.0.1:8000/ws`, and renders a
