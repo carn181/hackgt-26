@@ -87,7 +87,14 @@ def check_e2e(profile_name: str, timeout: float = 25.0) -> tuple[bool, list[str]
     finally:
         backend.stop()
 
-    events = [m for m in collected if m.get("type") == "sound_event"]
+    raw_events = [m for m in collected if m.get("type") == "sound_event"]
+    # The backend may re-send an event with the same id (a re-classification on the
+    # segment's loudest window, or a name-spotting escalation). The HUD merges by
+    # id, so the check does too: keep the first appearance's order, the last payload.
+    merged: dict[str, dict] = {}
+    for m in raw_events:
+        merged[m["id"]] = m
+    events = list(merged.values())
     if not events:
         lines.append("FAIL: no sound_event was produced from the synthetic bursts")
         return False, lines

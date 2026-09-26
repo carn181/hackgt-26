@@ -87,6 +87,11 @@ MIN_EVENT_SNR_DB = 12.0
 # floor costs nothing that would have been displayed anyway: the HUD fades a
 # marker by confidence, and `urgency_for` already downgrades below 0.35.
 MIN_EVENT_CONFIDENCE = 0.30
+# A re-classification of a finished segment replaces the first label when the new
+# one is a different class at least this confident (see `FusionEngine.reclassify`).
+MIN_RECLASSIFY_CONFIDENCE = 0.40
+# Longest window taken for the loudest-window re-classification.
+RECLASSIFY_SPAN_S = 0.975
 # A transcript is only attempted when the event looks like real speech: the class
 # must be in the speech family *and* the segment must be clean and confident.
 MIN_SPEECH_CONFIDENCE = 0.35
@@ -137,6 +142,9 @@ class FusionEngine:
         self.min_confidence = float(min_confidence)
         self._eid = 0
         self._sid = 0
+        # Backend-clock seconds at the last message; the pipeline sets it each block
+        # so re-classification can stamp an update without owning the clock.
+        self._now = 0.0
         self._by_id: OrderedDict[str, dict] = OrderedDict()
         self._last_merge: dict[str, tuple[float, str]] = {}
         self.pending: dict[int, PendingSegment] = {}
@@ -304,6 +312,50 @@ class FusionEngine:
         # Onset → message: the number the README's 1.5 s budget is about.
         self.latencies_ms.append((t_now - t_onset) * 1e3)
         return msg, seg
+
+    def tick(self, t_now: float) -> None:
+        """The pipeline's clock, so updates can be stamped without owning it."""
+        self._now = float(t_now)
+
+    def reclassify(self, seg: PendingSegment, window: np.ndarray, bearing_deg: float | None) -> dict | None:
+        """Re-label a finished segment on its **loudest** window, if it helps.
+
+        The first classification runs 0.2 s after the onset, so its window is the
+        segment's head — and when the detector's onset lands on a pre-bump (a
+        click, a table knock, the sound of a sink being unmuted) the head is not
+        the sound at all. Measured by `tools/speech_watch.py` on live audio: the
+        head window labelled an utterance `Silence`/`Pig` while the loudest window
+        labelled it `Speech`, and the ASR gate then refused a perfectly good
+        transcript.
+
+        Returns a replacement message (same `id`, so the HUD updates in place) when
+        the new label is materially better, else None. The caller owns the window
+        because it owns the ring buffer.
+        """
+        if self.ml is None or window.shape[1] < int(0.05 * self.rate):
+            return None
+        sig = self.sounding_signal(window, bearing_deg, seg.msg.get("source", "none"))
+        top = self.ml.top(sig, k=3)
+        if not top:
+            return None
+        cls, conf = top[0][0], float(top[0][1])
+        better = cls != seg.cls and conf >= max(seg.confidence, MIN_RECLASSIFY_CONFIDENCE)
+        louder = cls == seg.cls and conf >= seg.confidence + 0.15
+        if not (better or louder):
+            return None
+        seg.cls = cls
+        seg.confidence = conf
+        seg.urgency = urgency_for(cls, conf)
+        msg = dict(seg.msg)
+        msg["t"] = round(self._now, 3)
+        msg["class"] = cls
+        msg["confidence"] = round(conf, 3)
+        msg["urgency"] = seg.urgency
+        msg["alternatives"] = [{"class": n, "confidence": round(float(s), 3)} for n, s in top[1:]]
+        msg["reclassified"] = True
+        seg.msg = msg
+        self._remember(msg)
+        return msg
 
     def is_reportable(self, msg: dict) -> bool:
         """False for classes that describe no sound, and for weak segments.

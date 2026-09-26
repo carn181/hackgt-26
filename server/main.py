@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import bisect
 import contextlib
 import json
 import logging
@@ -44,6 +45,7 @@ from .fuse import (
     DOA_TAIL_S,
     DOA_WINDOW,
     MIN_EVENT_CONFIDENCE,
+    RECLASSIFY_SPAN_S,
     FusionEngine,
 )
 from .ingest import INT16, SCALE, BandPass, BrowserSource, microphones_health, open_source
@@ -279,19 +281,31 @@ class Backend:
                 self.transport = chosen
                 log.info("transport -> %s", chosen)
 
+        self.fusion.tick(self._t_now())
         mono = analysis_channel(cond, self.prof)
         for ev in self.detector.push(mono, blk.t_us):
             if isinstance(ev, Onset):
                 due = ev.index + int(round(self.fusion.classify_tail_s * self.rate))
                 self._schedule(due, "classify", ev)
             elif isinstance(ev, Offset):
+                # Re-label on the segment's loudest window before the ASR gate
+                # reads the class (the head window is often a pre-bump), then
+                # transcribe.
+                self._schedule(ev.index + int(round(0.05 * self.rate)), "reclassify", ev)
                 self._schedule(ev.index + int(round(0.2 * self.rate)), "asr", ev)
         self._run_due()
 
     def _schedule(self, index: int, kind: str, payload) -> None:
-        self._due.append((index, kind, payload))
-        if len(self._due) > 4:
-            self._due.sort(key=lambda x: x[0])
+        """Queue work for a future sample index, keeping the list ordered.
+
+        `bisect.insort` rather than an append-and-sort-sometimes: the previous
+        version only sorted once the list exceeded four entries, so with a handful
+        of pending tasks the queue could be out of order — and since `_run_due`
+        pops the *first* entry and compares it to the cursor, an out-of-order head
+        delays everything behind it (observed live as a re-classification running
+        before the classification it was meant to improve).
+        """
+        bisect.insort(self._due, (index, kind, payload), key=lambda item: item[0])
 
     def _run_due(self) -> None:
         cursor = self.ring.written
@@ -300,6 +314,8 @@ class Backend:
             try:
                 if kind == "classify":
                     self._do_classify(payload)
+                elif kind == "reclassify":
+                    self._do_reclassify(payload)
                 else:
                     self._do_asr(payload)
             except Exception:
@@ -375,6 +391,50 @@ class Backend:
                 )
             except OSError as exc:
                 log.warning("could not persist spacing: %s", exc)
+
+    def _do_reclassify(self, off: Offset) -> None:
+        """Re-label a finished segment on its loudest 0.975 s, and re-send if better.
+
+        Runs on the pipeline thread (YAMNet is not thread-safe) and before the ASR
+        task, so the transcriber's gate sees the better class.
+        """
+        seg = self.fusion.pending.get(off.onset.index)
+        if seg is None or self.ml is None:
+            return
+        rate = self.rate
+        start = max(0, off.onset.index - int(round(0.15 * rate)))
+        end = min(self.ring.written, off.index + int(round(0.20 * rate)))
+        if end - start < int(round(0.20 * rate)):
+            return
+        data = self._window(start, end - start)
+        span = int(round(RECLASSIFY_SPAN_S * rate))
+        n = data.shape[1]
+        if n > span:
+            hop = int(round(0.01 * rate))
+            mono = analysis_channel(data, self.prof)
+            frames = mono[: n // hop * hop].reshape(-1, hop)
+            energy = np.square(frames, dtype=np.float64).mean(axis=1)
+            peak = int(np.argmax(energy)) * hop
+            lo = min(max(0, peak - span // 2), n - span)
+            window = np.ascontiguousarray(data[:, lo : lo + span])
+        else:
+            window = data
+        msg = self.fusion.reclassify(seg, window, seg.bearing_deg)
+        if msg is None:
+            return
+        # Judge the update on the *segment's* own SNR, not the head-window
+        # event's: the head can be a pre-bump at 9 dB while the sound itself is
+        # 20 dB above the floor, which would otherwise suppress a good label.
+        msg["peak_db"] = round(float(off.peak_db), 1)
+        msg["snr_db"] = round(float(off.peak_db - self.detector.floor_db), 1)
+        send = self.fusion.is_reportable(msg) and self.fusion.should_send(msg)
+        if send:
+            self.hub.publish(msg)
+        log.info(
+            "reclassified %s: %s %.2f (loudest %.2fs of a %.2fs segment)%s",
+            msg["id"], msg["class"], msg["confidence"], span / rate, (end - start) / rate,
+            "" if send else " [not reportable]",
+        )
 
     def _do_asr(self, off: Offset) -> None:
         """Slice the finished segment now, transcribe on a worker thread.
