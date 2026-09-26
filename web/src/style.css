@@ -14,6 +14,11 @@ html, body {
   position: relative;
   width: 100vw;
   height: 100vh;
+  /* Mobile Safari/Chrome don't shrink 100vh when their address bar/home
+     indicator is showing, which was clipping the bottom compass + buttons.
+     dvh accounts for the actual visible viewport; browsers that don't
+     support it just ignore this line and keep the vh value above. */
+  height: 100dvh;
 }
 
 #cam {
@@ -54,7 +59,7 @@ html, body {
 #controls {
   position: absolute;
   right: 12px;
-  bottom: 44px;
+  bottom: calc(44px + env(safe-area-inset-bottom, 0px));
   display: flex;
   gap: 6px;
   z-index: 10;

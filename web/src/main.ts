@@ -1,7 +1,7 @@
 import "./style.css";
 import { HudState } from "./state";
 import { WsClient, resolveWsUrl, type ConnState } from "./ws-client";
-import { DEFAULT_CALIB, screenXToBearingDeg, normalizeDeg } from "./calib";
+import { DEFAULT_CALIB, effectiveFovDeg, screenXToBearingDeg, normalizeDeg } from "./calib";
 import { detectFaces, initFaceLandmarker, type DetectedFace } from "./faces";
 import { drawOverlay, type FaceAnchor } from "./render";
 import type { BackendMsg, Calibration, Mode } from "./types";
@@ -94,8 +94,16 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>(".mode-btn")) {
 
 async function startCamera() {
   try {
+    // Request a stream shaped like the actual viewport (portrait on a
+    // phone) instead of a fixed landscape ideal -- otherwise object-fit:
+    // cover has to crop a large chunk off the sides to fill a tall
+    // container, which both looks "too zoomed in" and silently shrinks the
+    // real visible FOV below what calib.camera_fov_deg claims (see
+    // effectiveFovDeg in calib.ts, which corrects for whatever crop
+    // actually happens regardless of how good this match turns out to be).
+    const aspect = window.innerWidth / window.innerHeight;
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: { facingMode: { ideal: "environment" }, aspectRatio: { ideal: aspect } },
       audio: false,
     });
     video.srcObject = stream;
@@ -177,11 +185,25 @@ function frame() {
   state.tick(now / 1000, dtS);
   void detectFacesIfReady();
 
+  // Recomputed every frame since it depends on the video's decoded size
+  // (only known once metadata loads) and the canvas's current CSS size
+  // (which changes on resize/orientation change).
+  const renderCalib: Calibration = {
+    ...calib,
+    camera_fov_deg: effectiveFovDeg(
+      video.videoWidth,
+      video.videoHeight,
+      canvas.clientWidth,
+      canvas.clientHeight,
+      calib.camera_fov_deg
+    ),
+  };
+
   const renderStart = performance.now();
-  const faceAnchors = computeFaceAnchors(latestFaces, calib);
+  const faceAnchors = computeFaceAnchors(latestFaces, renderCalib);
   drawOverlay(ctx, canvas, {
     state,
-    calib,
+    calib: renderCalib,
     faces: latestFaces,
     faceAnchors,
     wsState,

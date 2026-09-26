@@ -45,6 +45,34 @@ export function normalizeDeg(deg: number): number {
 }
 
 /**
+ * The horizontal FOV actually visible on screen after `object-fit: cover`
+ * crops the camera feed to fill a container of a different aspect ratio --
+ * e.g. a landscape-ish camera stream inside a tall phone viewport gets
+ * scaled up until it fills the height, cropping a chunk off the sides. If we
+ * fed the raw, uncropped `camera_fov_deg` into the bearing math in that
+ * case, every marker would land at the wrong screen position (the visible
+ * frame covers less real-world angle than the nominal FOV claims). Returns
+ * `camera_fov_deg` unchanged when there's no horizontal crop (including
+ * whenever video dimensions aren't known yet).
+ */
+export function effectiveFovDeg(
+  videoW: number,
+  videoH: number,
+  canvasW: number,
+  canvasH: number,
+  cameraFovDeg: number
+): number {
+  if (!videoW || !videoH || !canvasW || !canvasH) return cameraFovDeg;
+  const scale = Math.max(canvasW / videoW, canvasH / videoH);
+  const displayedW = videoW * scale;
+  if (displayedW <= canvasW + 0.5) return cameraFovDeg; // height-constrained or exact match: no horizontal crop
+  const visibleFraction = canvasW / displayedW;
+  const halfFovRad = (cameraFovDeg / 2) * (Math.PI / 180);
+  const effHalfFovRad = Math.atan(visibleFraction * Math.tan(halfFovRad));
+  return (effHalfFovRad * 2 * 180) / Math.PI;
+}
+
+/**
  * Front/back mirror candidate for `ambiguous:true` events. A straight linear
  * array only measures the interaural (left-right) delay, so a source at
  * bearing theta from the nose is indistinguishable from one at (180 - theta)

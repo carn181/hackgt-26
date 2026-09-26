@@ -14,7 +14,7 @@ const URGENCY_COLOR: Record<Urgency, string> = {
 
 const PIXEL_FONT = '"Pixelify Sans", "Courier New", monospace';
 const HORIZON_FRAC = 0.45; // vertical position for in-frame markers
-const COMPASS_Y_FRAC = 0.93;
+const COMPASS_Y_FRAC = 0.9; // leaves clearance for a phone's home-indicator/safe-area strip
 const COMPASS_HEIGHT = 34;
 
 export interface FaceAnchor {
@@ -412,6 +412,7 @@ function drawDebugPanel(ctx: CanvasRenderingContext2D, opts: RenderOptions) {
   const as = opts.state.arrayStatus;
   lines.push(`ws: ${opts.wsState}${opts.rttMs !== null ? `  rtt ${opts.rttMs.toFixed(0)}ms` : ""}`);
   lines.push(`mode: ${opts.state.mode}   fps: ${opts.fps.toFixed(0)}`);
+  lines.push(`fov: ${opts.calib.camera_fov_deg.toFixed(1)}° (effective, post-crop)`);
   if (opts.addedLatencyMs !== null) lines.push(`added latency: ${opts.addedLatencyMs.toFixed(1)}ms`);
   if (bs) {
     lines.push(`model: ${bs.model} sha:${bs.model_sha256.slice(0, 8)} (${bs.classes} cls)`);

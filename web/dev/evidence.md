@@ -3,6 +3,42 @@
 Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
 ticks go in README §0 with the owner+time protocol.
 
+## 2026-09-26 — phone viewport fix + real horizontal-FOV correction
+
+Per human report on the actual phone: "too zoomed in, can't see the bottom
+axis." Two separate bugs:
+
+1. `#app` was sized with plain `height: 100vh`, which mobile Safari/Chrome
+   don't shrink when their address bar is showing — added `height: 100dvh`
+   (`src/style.css`) plus `env(safe-area-inset-bottom)` padding on
+   `#controls`, and pulled `COMPASS_Y_FRAC` in from 0.93 to 0.9 for extra
+   clearance from a phone's home-indicator strip.
+2. `getUserMedia` requested a fixed landscape-ideal stream
+   (1280x720) regardless of device orientation; on a portrait phone,
+   `object-fit: cover` then has to scale the video up to fill the height,
+   cropping a large chunk off the sides — the actual "zoomed in" look, and
+   not just cosmetic: it silently shrinks the real visible FOV below what
+   `calib.camera_fov_deg` claims, which would have broken C3's accuracy
+   check once real bearings exist. Fixed two ways: (a) request
+   `aspectRatio: {ideal: window.innerWidth/innerHeight}` instead of a fixed
+   landscape size, so there's less to crop in the first place; (b) added
+   `effectiveFovDeg()` (`src/calib.ts`), which derives the actual visible
+   horizontal FOV from the real relationship between `video.videoWidth`/
+   `videoHeight` and the displayed canvas size, and is now what's actually
+   fed into the bearing math (`main.ts`'s per-frame `renderCalib`) instead
+   of the raw backend-reported value. This protects C3 regardless of how
+   good the aspect-ratio negotiation turns out to be on any given
+   phone/browser.
+
+Verified: hand-computed cases in Node (landscape video in a portrait
+canvas → FOV correctly crushed from 62° to ~19°; matching aspect → ~62°
+unchanged; laptop/landscape canvas → exactly 62°, no video yet → 62°
+unchanged) all matched expectations. Also confirmed in the Browser pane at
+a 375x812 mobile viewport that the compass bar and mode buttons now stay
+fully on-screen (no camera in that sandboxed pane, so the FOV-crop part
+specifically still needs a real-phone re-check — flagged back to the
+human).
+
 ## 2026-09-26 — direction-aware speech bubbles (tailed, three anchor styles)
 
 Per human feedback after live-testing on phone: speech bubbles now always
