@@ -17,7 +17,9 @@ overruns are counted and surfaced in the WS `array_status`.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import queue
 import shutil
 import socket
 import struct
@@ -468,6 +470,9 @@ def open_source(
         return src
     if spec == "pw":
         return PwSource(rate, channels, nsamp, device=device)
+    if spec == "browser":
+        # Frames arrive over the WebSocket (§4.6 `audio`); the HUD is the sensor.
+        return BrowserSource(rate, channels, nsamp)
     if spec == "udp":
         return UdpSource(rate, channels, nsamp, port=port)
     if spec == "serial":
@@ -478,7 +483,7 @@ def open_source(
         if not path:
             raise ValueError("--source file requires --source-file")
         return FileSource(rate, channels, nsamp, path, speed=speed, loop=loop)
-    raise ValueError(f"unknown source {spec!r} (pw|udp|serial|file|auto)")
+    raise ValueError(f"unknown source {spec!r} (pw|udp|serial|file|browser|auto)")
 
 
 class _AutoSource(_BaseSource):
@@ -581,15 +586,141 @@ class BandPass:
         self.zi[:] = 0.0
 
 
+class BrowserSource(_BaseSource):
+    """Audio captured by the HUD's browser (phone or laptop) and streamed over WS.
+
+    Why this exists: the stand-in array's problem is its microphones, and the
+    phone in the human's pocket is a better sensor than this laptop's DMIC pair —
+    and it is nowhere near the chassis, so a clap arrives as *airborne* sound
+    instead of a structural thump (which is what makes a clap read as a low
+    frequency event). It is also the only way to get a second physical device
+    into the array without hardware.
+
+    What it cannot do is localize: one microphone is one microphone, so the
+    profile is `browser_mono`, `pairs()` is empty, DOA refuses, and the bearing
+    keeps coming from the camera (`vision`).
+
+    Frames arrive on the asyncio loop and are handed to the pipeline thread
+    through a bounded queue: a slow consumer drops the oldest frame rather than
+    back-pressuring the socket.
+    """
+
+    kind = "browser"
+
+    def __init__(self, rate: int, channels: int, nsamp: int, queue_frames: int = 96):
+        super().__init__(rate, channels, nsamp)
+        self._q: queue.Queue[Block] = queue.Queue(maxsize=int(queue_frames))
+        self.frames = 0
+        self.dropped = 0
+        self.last_frame_mono = 0.0
+        self.last_client_t: float | None = None
+        self.silence_samples = 0
+        self._expected_mono: float | None = None
+        self._next_warn = 0.0
+        self._bad: dict[str, int] = {}
+
+    def start(self) -> None:
+        self.stats.start_mono = time.monotonic()
+        log.info(
+            "browser source: waiting for §4.6 `audio` frames (%d Hz, %d ch, pcm16)",
+            self.rate, self.channels,
+        )
+
+    def reject(self, reason: str) -> None:
+        """Count and rate-limit a malformed frame complaint (called from the loop)."""
+        self._bad[reason] = self._bad.get(reason, 0) + 1
+        now = time.monotonic()
+        if now > self._next_warn:
+            self._next_warn = now + 5.0
+            log.warning("browser source: rejected frame (%s), %d so far", reason, self._bad[reason])
+
+    def push(self, samples: np.ndarray, seq: int | None = None, t_client: float | None = None) -> None:
+        """Queue one frame of (nch, n) float32 −1..1. Called from the WS handler."""
+        n = samples.shape[1]
+        if n == 0:
+            return
+        now = time.monotonic()
+        blk = Block(t_us=self._stamp(now, n), seq=int(seq) if seq is not None else self.frames, x=samples)
+        try:
+            self._q.put_nowait(blk)
+        except queue.Full:
+            with contextlib.suppress(queue.Empty):
+                self._q.get_nowait()
+            self.dropped += 1
+            with contextlib.suppress(queue.Full):
+                self._q.put_nowait(blk)
+        if seq is not None:
+            # A browser restarts `seq` at 0 for every connection; without this a
+            # reconnect is counted as a 4-billion-frame gap.
+            if int(seq) == 0:
+                self._next_seq = None
+            self._count_seq(int(seq))
+        self.last_frame_mono = now
+        self.last_client_t = t_client
+
+    def blocks(self) -> Iterator[Block]:
+        """Yield frames, inserting silence for any gap.
+
+        The clock downstream is `sample_index / rate`, which is only meaningful if
+        the stream is continuous. When the browser pauses (a phone screen locks, a
+        tab is backgrounded, nobody has opened the HUD yet) the audio simply stops
+        arriving, and without this the index falls behind wall time for ever —
+        measured as a *constant 60 s* onset→event latency on a stream that had a
+        one-minute gap in it. Filling the gap keeps time honest and gives the
+        detector real silence to track its floor against.
+        """
+        while not self._stopped.is_set():
+            try:
+                blk = self._q.get(timeout=0.25)
+            except queue.Empty:
+                now = time.monotonic()
+                gap = now - self._expected_mono if self._expected_mono else 0.0
+                if gap > 0.03:
+                    n = int(min(gap, 0.5) * self.rate)
+                    if n >= 64:
+                        self.silence_samples += n
+                        self._expected_mono = now
+                        yield Block(
+                            t_us=self._stamp(now, n),
+                            seq=self.frames,
+                            x=np.zeros((self.channels, n), dtype=np.float32),
+                        )
+                if now > self._next_warn:
+                    self._next_warn = now + 5.0
+                    log.warning("browser source: no audio frames yet — open the HUD with ?mic=1")
+                continue
+            self.frames += 1
+            self.stats.blocks += 1
+            self.stats.samples += blk.x.shape[1]
+            now = time.monotonic()
+            self.stats.last_block_mono = now
+            self._expected_mono = now + blk.x.shape[1] / self.rate
+            yield blk
+
+    def stop(self) -> None:
+        self._stopped.set()
+
+    def stats_dict(self) -> dict:
+        return {
+            **self.stats.as_dict(),
+            "frames": self.frames,
+            "queue_dropped": self.dropped,
+            "silence_filled_s": round(self.silence_samples / self.rate, 2),
+        }
+
+
 def microphones_health(ring_x: np.ndarray, floor_db: float = -75.0, clip_db: float = -1.0) -> list[dict]:
     """Per-channel health from the recent window: alive, not clipping.
 
-    `ring_x` is (nch, n) float32. This is the honest stand-in for the hat's
-    per-mic liveness check — silence or a stuck rail is all we can detect from
-    one laptop lid, but it is the same signal the HUD renders.
+    `ring_x` is (nch, n) float32. An empty window (a source that has not produced
+    audio yet — the browser source before the first frame) reports `ok: false`
+    rather than a numpy warning about a mean of nothing.
     """
     out = []
     for ch in range(ring_x.shape[0]):
+        if ring_x.shape[1] == 0:
+            out.append({"id": ch, "ok": False})
+            continue
         rms = float(np.sqrt(np.mean(np.square(ring_x[ch], dtype=np.float64)) + 1e-20))
         db = 20.0 * np.log10(rms)
         out.append({"id": ch, "ok": bool(db > floor_db and db < clip_db)})

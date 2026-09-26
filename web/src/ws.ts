@@ -136,6 +136,15 @@ export class WsClient {
     this.raw({ type: 'vision', t: performance.now() / 1000, faces })
   }
 
+  /**
+   * §4.6 `audio` (additive): one 20 ms PCM16 frame of the browser's microphone.
+   * Silent when the socket is closed — a dropped frame is not an error, the next
+   * one is 20 ms away.
+   */
+  audio(base64: string, seq: number, rate: number, channels: number): void {
+    this.raw({ type: 'audio', t: performance.now() / 1000, rate, channels, format: 'pcm16', seq, data: base64 })
+  }
+
   private raw(msg: ClientMsg): void {
     if (this.socket?.readyState !== WebSocket.OPEN) return
     this.socket.send(JSON.stringify(msg))

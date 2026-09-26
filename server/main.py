@@ -46,7 +46,7 @@ from .fuse import (
     MIN_EVENT_CONFIDENCE,
     FusionEngine,
 )
-from .ingest import BandPass, microphones_health, open_source
+from .ingest import INT16, SCALE, BandPass, BrowserSource, microphones_health, open_source
 from .ring import RingBuffer
 from .vision import FACE_TTL_S, VisionTracker
 
@@ -126,7 +126,6 @@ class Backend:
         self._due: list[tuple[int, str, object]] = []
         self._thread = None
         self._stop = False
-        self.transport = self.prof.transport
         self.source_stats_at_connect: dict = {}
         self._git_rev = self._read_git_rev()
         self._last_status = 0.0
@@ -146,6 +145,9 @@ class Backend:
             loop=args.loop,
             auto_wait_s=args.auto_wait,
         )
+        # The transport reported to the HUD is the source that is actually
+        # feeding the pipeline, not what the profile was written for.
+        self.transport = getattr(self.source, "kind", self.prof.transport)
         self.fusion = FusionEngine(
             self.prof,
             rate=self.rate,
@@ -438,11 +440,15 @@ class Backend:
         if not self.args.print_events:
             return
         note = "" if sent else "  SUPPRESSED"
+        # Runner-up classes are printed because "a clap reads as Fart" is only
+        # answerable if you can see whether `Clapping` was a close second.
+        alts = msg.get("alternatives") or []
+        alt = "  alt: " + ", ".join(f"{a['class']} {a['confidence']:.2f}" for a in alts[:2]) if alts else ""
         print(
             f"[{t_now:7.2f}s] {msg['class']:<22} {msg['confidence']:.2f} "
             f"{msg['bearing_deg']:+6.1f}° ±{msg['accuracy_deg']:.0f}° "
             f"{'AMBIG' if msg['ambiguous'] else '     '} {msg['urgency']:<6} {msg['source']:<12} "
-            f"snr {float(msg.get('snr_db', 0)):5.1f} dB  onset→ws {(t_now - t_onset) * 1e3:5.0f} ms{note}",
+            f"snr {float(msg.get('snr_db', 0)):5.1f} dB  onset→ws {(t_now - t_onset) * 1e3:5.0f} ms{note}{alt}",
             flush=True,
         )
         n = len(self.fusion.latencies_ms)
@@ -525,6 +531,14 @@ class Backend:
     def on_vision(self, faces: list[dict]) -> None:
         self.vision.observe(faces, self._t_now())
 
+    def on_audio(self, msg: dict) -> None:
+        """§4.6 `audio`: the browser is the microphone (see `BrowserSource`)."""
+        frame = decode_audio_frame(msg, self)
+        if frame is None:
+            return
+        samples, seq, t_client = frame
+        self.source.push(samples, seq, t_client)
+
     def on_mode(self, mode: str) -> None:
         if mode in MODE_BY_NAME:
             self.fusion.set_mode(mode)
@@ -573,7 +587,11 @@ def create_app(backend: Backend) -> FastAPI:
             "events": backend.fusion.emitted,
             "clients": len(backend.hub.clients),
             "latency": backend.fusion.latency_summary(),
-            "source": backend.source.stats.as_dict(),
+            "source": (
+                backend.source.stats_dict()
+                if hasattr(backend.source, "stats_dict")
+                else backend.source.stats.as_dict()
+            ),
             # The two numbers that answer "why is nothing showing up": the noise
             # floor the detector is working against, and the loudest frame seen.
             "detector": {
@@ -640,6 +658,56 @@ async def _handle_client_message(backend: Backend, raw: str, ws: WebSocket) -> N
         faces = msg.get("faces") or []
         if isinstance(faces, list):
             backend.on_vision(faces)
+    elif kind == "audio":
+        backend.on_audio(msg)
+
+
+def decode_audio_frame(msg: dict, backend: Backend) -> tuple[np.ndarray, int | None, float | None] | None:
+    """§4.6 `audio` → (nch, n) float32 −1..1, or None when the frame is unusable.
+
+    Everything is validated against the live profile: a browser sending 48 kHz
+    stereo into a 16 kHz mono pipeline would otherwise be interpreted as a
+    different array and quietly corrupt every measurement downstream.
+    """
+    import base64
+    import binascii
+
+    src = backend.source
+    if not isinstance(src, BrowserSource):
+        src_reject = getattr(src, "reject", None)
+        if callable(src_reject):
+            src_reject("audio frame while the source is not `browser`")
+        return None
+    if str(msg.get("format", "pcm16")) != "pcm16":
+        src.reject(f"format {msg.get('format')!r}")
+        return None
+    rate = int(msg.get("rate", 0) or 0)
+    channels = int(msg.get("channels", 0) or 0)
+    if rate != backend.rate:
+        src.reject(f"rate {rate} != {backend.rate}")
+        return None
+    if channels != backend.prof.nch:
+        src.reject(f"channels {channels} != {backend.prof.nch}")
+        return None
+    data = msg.get("data")
+    if not isinstance(data, str):
+        src.reject("missing base64 data")
+        return None
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
+        src.reject("bad base64")
+        return None
+    x = np.frombuffer(raw, dtype=INT16).astype(np.float32)
+    x *= SCALE
+    if x.size == 0 or x.size % channels:
+        src.reject(f"{x.size} samples not divisible by {channels}")
+        return None
+    seq = msg.get("seq")
+    t_client = msg.get("t")
+    return x.reshape(channels, -1), (int(seq) if isinstance(seq, (int, float)) else None), (
+        float(t_client) if isinstance(t_client, (int, float)) else None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -649,7 +717,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="server.main", description="hackgt-26 backend (§4.5/§4.6)")
     p.add_argument("--profile", default="laptop_dmic",
                    help=f"array geometry: one of {', '.join(available_profiles())}")
-    p.add_argument("--source", default="auto", choices=["auto", "pw", "udp", "serial", "file"])
+    p.add_argument("--source", default="auto", choices=["auto", "pw", "udp", "serial", "file", "browser"],
+                   help="browser = the HUD's own mic streamed over the WebSocket (§4.6 audio)")
     p.add_argument("--source-file", default=None, help="wav for --source file (16 kHz, matches the profile)")
     p.add_argument("--speed", type=float, default=1.0, help="file replay speed (1.0 = real time)")
     p.add_argument("--loop", action="store_true", help="loop the file")

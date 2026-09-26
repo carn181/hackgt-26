@@ -294,7 +294,21 @@ everything else (SoundWatch's top finding: **overload is the failure mode**).
 {"type":"set_mode","mode":"all|important|quiet"}
 {"type":"ping","t":1.0}
 {"type":"vision","t":1.23,"faces":[{"xc":0.42,"w":0.12,"mouth":0.31,"mouthActive":true}]}
+{"type":"audio","t":1.23,"rate":16000,"channels":1,"format":"pcm16","seq":42,"data":"<base64>"}
 ```
+
+`audio` (added by owner B, 2026-09-26, additive) makes the HUD's own microphone the backend's
+input, so the **phone** can be the sensor when the laptop's mics are the weak part of the demo.
+One message = one 20 ms frame of 16 kHz mono PCM16 (320 samples, 640 bytes, base64 in JSON,
+~43 kB/s at 50 frames/s). The backend validates `rate`, `channels` and `format` against the live
+profile and drops mismatched frames with a counted warning, so a stray 48 kHz stereo stream cannot
+be silently interpreted as a different array.
+
+Run it with `--profile browser_mono --source browser`. One capsule is not an array, so `pairs()` is
+empty, DOA refuses, and the bearing still comes from `vision` — the class, the timing and the
+transcript are what this path is for. The profile's band is wider than the laptop's (80–8000 Hz vs
+300–6000) because a phone mic has no DC/LF junk to hide from and a clap's identifying energy is its
+high-frequency snap.
 
 `vision` (added by owner B, 2026-09-26, additive) carries the face observations the HUD already
 computes, because **there is exactly one webcam and the browser owns it**: the backend cannot open
@@ -430,12 +444,27 @@ tools/run_backend.sh --no-asr --print-events           # no Whisper; one line pe
 | Situation | Command |
 |---|---|
 | Laptop stand-in array (this laptop's DMIC pair) | `--profile laptop_dmic` |
+| **The HUD's mic, e.g. your phone** | `--profile browser_mono --source browser` + open the HUD with `?mic=1` |
 | The hat (4 mics, `config/array.json` + measured `calib.json`) | `--profile hat` |
 | Auto-detect: listen on UDP :7000, fall back to the local mic after 2 s | `--source auto` (default) |
 | Latency, on a real sound played from the speakers | `.venv/bin/python tools/latency_bench.py --inject-side flip` |
 | Sign-flip test (A10) on any array, no ESP32 needed | the same command — it prints `sign flip: OK/MISMATCH` |
+| Why a clap reads as a fart | `.venv/bin/python tools/clap_lab.py --shots 5` (clap when prompted) |
+| Speech detection alone, no HUD and no backend | `.venv/bin/python tools/speech_watch.py --local` |
 | Verify the pipeline with no microphone at all | `.venv/bin/python -m server.selftest` |
 | Watch §4.2 packets (the tool A5 needs) | `.venv/bin/python tools/udp_sniff.py --selftest` |
+
+**Phone as the microphone** (the camera needs HTTPS, and so does `getUserMedia`):
+
+```bash
+tools/run_backend.sh --profile browser_mono --source browser   # terminal 1
+cd web && npm run phone                                        # terminal 2, prints https://<lan-ip>:5173/
+# then on the phone: https://<lan-ip>:5173/?mic=1   (add START CAMERA for bearings)
+```
+The phone streams its own mic to the backend over the socket, so the laptop's DMIC pair is out of
+the loop entirely — which is also the quickest answer to "why does a clap read as a fart": the
+phone is not attached to the chassis, so the clap arrives as airborne sound instead of a structural
+thump. `window.__hud.mic()` reports frames sent and the graph's real sample rate.
 
 - **`--fit-spacing write`** (default) measures the array's effective spacing against the camera while
   someone talks, and persists it into `server/profiles/<name>.json`. `config/calib.json` stays owner D's.

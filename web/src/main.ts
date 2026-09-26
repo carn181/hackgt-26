@@ -1,5 +1,6 @@
 import './style.css'
 import { Hud } from './hud'
+import { MicStream } from './mic'
 import { VisionHost } from './vision'
 import { WsClient, resolveWsUrl } from './ws'
 import type { ConnState } from './ws'
@@ -278,6 +279,25 @@ window.addEventListener('pagehide', () => {
 // ---------------------------------------------------------------------------
 ws.connect()
 hud.setVision(vision.status.state, vision.faces)
+
+// §4.6 `audio`: `?mic=1` makes this browser the backend's microphone. The phone
+// is a better sensor than the laptop's DMIC pair and is not attached to the
+// chassis, so a clap arrives as airborne sound (see web/src/mic.ts).
+const mic = new MicStream()
+const micWanted = params.get('mic') === '1'
+mic.onStatus = (status) => {
+  if (status.state === 'error') console.warn('mic:', status.lastError)
+  else console.info(`mic: ${status.state}${status.sampleRate ? ` @ ${status.sampleRate} Hz` : ''} (${status.frames} frames, ${status.seconds.toFixed(1)}s sent)`)
+}
+if (micWanted) {
+  ws.onStatus = ((previous) => (status: Parameters<NonNullable<typeof ws.onStatus>>[0]) => {
+    previous(status)
+    if (status.state === 'open' && mic.status.state !== 'running' && mic.status.state !== 'starting') {
+      void mic.start((base64, seq, rate, channels) => ws.audio(base64, seq, rate, channels))
+    }
+  })(ws.onStatus)
+}
+
 renderConnectionBadge(ws.status.state, 0, ws.status.lastError)
 paintDiagnostics()
 paintNotice()
@@ -292,6 +312,7 @@ Object.defineProperty(window, '__hud', {
     snapshot: () => hud.snapshot(),
     ws: () => ws.status,
     vision: () => vision.status,
+    mic: () => mic.status,
     cameraStarted: () => cameraStarted,
   },
 })

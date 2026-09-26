@@ -1,0 +1,31 @@
+{
+  "name": "browser_mono",
+  "transport": "browser",
+  "_notes": [
+    "The HUD's own microphone (a phone, or a laptop browser) streamed over the WebSocket as",
+    "§4.6 `audio` frames. One capsule, so there is no array and no azimuth: `pairs()` is empty,",
+    "DOA refuses, and the bearing comes from the camera (`source: vision`) instead.",
+    "Why it is worth having: the phone is a better microphone than this laptop's DMIC pair and it",
+    "is nowhere near the chassis, so a clap arrives as airborne sound rather than a structural",
+    "thump — the low-frequency reading that made a clap classify as `Fart`.",
+    "The band is wider than the laptop profile on purpose (80-8000 Hz vs 300-6000): a phone mic has",
+    "no DC/LF junk to hide from, and a clap's identifying energy is the high-frequency snap.",
+    "Use it with: tools/run_backend.sh --profile browser_mono --source browser"
+  ],
+  "rate_hz": 16000,
+  "layout": "mono",
+  "spacing_m": null,
+  "baseline_m": null,
+  "calibrated": false,
+  "uncalibrated_accuracy_deg": 180.0,
+  "front_back_heuristic": false,
+  "highpass_hz": 80.0,
+  "lowpass_hz": 8000.0,
+  "head_yaw_offset_deg": 0.0,
+  "camera_fov_deg": 62.0,
+  "device": null,
+  "channels": [0],
+  "mics": [
+    { "id": 0, "x": 0.0, "y": 0.0, "z": 0.0 }
+  ]
+}

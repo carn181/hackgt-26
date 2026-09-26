@@ -123,7 +123,23 @@ export interface VisionMsg {
   faces: VisionFaceMsg[]
 }
 
-export type ClientMsg = SetModeMsg | PingMsg | VisionMsg
+/**
+ * §4.6 `audio` (additive): the HUD's own microphone, so the phone can be the
+ * sensor when the laptop's mics are the weak part of the demo. One frame = one
+ * 20 ms chunk of 16 kHz mono PCM16, base64 in JSON; the backend validates rate,
+ * channel count and format against the live profile and drops anything else.
+ */
+export interface AudioMsg {
+  type: 'audio'
+  t: number
+  rate: number
+  channels: number
+  format: 'pcm16'
+  seq: number
+  data: string
+}
+
+export type ClientMsg = SetModeMsg | PingMsg | VisionMsg | AudioMsg
 
 // ---------------------------------------------------------------------------
 // Face tracking (on-device, worker-side). Local to the app: never on the wire.
