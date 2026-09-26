@@ -243,7 +243,7 @@ class PwSource(_BaseSource):
 # ---------------------------------------------------------------------------
 # ESP32 packet sources (§4.2)
 # ---------------------------------------------------------------------------
-def parse_packet(buf: bytes, nch_expected: int, rate: int, t0_mono: float) -> Block | None:
+def parse_packet(buf: bytes, nch_expected: int, rate: int) -> Block | None:
     """Parse one §4.2 packet. Returns None when the framing is wrong.
 
     `t_us` is the *hat's* monotonic clock; we keep the wall clock of arrival and
@@ -300,7 +300,7 @@ class UdpSource(_BaseSource):
                 continue
             except OSError:
                 return
-            blk = parse_packet(data, self.channels, self.rate, self.stats.start_mono)
+            blk = parse_packet(data, self.channels, self.rate)
             if blk is None:
                 self.stats.resyncs += 1
                 continue
@@ -356,7 +356,7 @@ class SerialSource(_BaseSource):
                     del self._buf[:idx]
                 if len(self._buf) < pkt_len:
                     break
-                blk = parse_packet(bytes(self._buf[:pkt_len]), self.channels, self.rate, self.stats.start_mono)
+                blk = parse_packet(bytes(self._buf[:pkt_len]), self.channels, self.rate)
                 del self._buf[:pkt_len]
                 if blk is None:
                     self.stats.resyncs += 1

@@ -68,13 +68,3 @@ class RingBuffer:
         if avail < n:
             dst[:, : n - avail] = 0
         return dst
-
-    def t_us_of(self, index_from_end: int) -> int:
-        """Capture time of the sample `index_from_end` before the newest one."""
-        rate = getattr(self, "rate_hz", None)
-        if not rate:
-            raise RuntimeError("ring has no rate_hz; set it from the profile")
-        return int(self.latest_t_us - round(index_from_end * 1e6 / rate))
-
-    def seconds_available(self, rate_hz: int) -> float:
-        return min(self.written, self.capacity) / rate_hz

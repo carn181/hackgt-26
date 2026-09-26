@@ -55,6 +55,10 @@ MIN_BAND_RATIO = 1.15
 # narrow band the correlation is sinusoid-like, so its peak-to-sigma ratio is ~1.4
 # even for a perfect source.)
 MIN_COHERENCE = 0.35
+# An uncalibrated array has an unknown delay→angle scale, so a marginal estimate
+# is worthless: it can only be wrong in magnitude *and* direction. Demand real
+# coherence (a genuine common source reaches 0.8+) before reporting anything.
+MIN_COHERENCE_UNCALIBRATED = 0.55
 # Individual (pair, sub-band) observations below this coherence are dropped
 # instead of being averaged in.
 MIN_OBS_COHERENCE = 0.20
@@ -70,7 +74,6 @@ class DoaEstimate:
     delay_samples: float          # mean pairwise lag for the widest baseline
     sigma_delay_samples: float    # spread of the per-pair, per-subband lags
     coherence: float
-    resolved_by: str = ""         # filled in by fusion when vision breaks the tie
 
     def as_dict(self) -> dict:
         return {
@@ -387,8 +390,9 @@ def estimate_bearing(
         floor = _sigma_to_degrees(0.1, dx_eff, rate, sin_theta)
         accuracy = max(2.0, min(90.0, max(sigma_deg, floor)))
 
-    if coherence < MIN_COHERENCE:
-        log.debug("doa rejected: coherence=%.2f < %.2f", coherence, MIN_COHERENCE)
+    min_coh = MIN_COHERENCE if prof.calibrated else MIN_COHERENCE_UNCALIBRATED
+    if coherence < min_coh:
+        log.debug("doa rejected: coherence=%.2f < %.2f", coherence, min_coh)
         return None
 
     # A 1-D layout cannot separate θ from 180°−θ. Fusion may resolve it; here it
@@ -396,7 +400,7 @@ def estimate_bearing(
     # front/back cue that has been validated.
     ambiguous = not (prof.layout != "line" and prof.front_back_heuristic)
 
-    confidence = float(np.clip((coherence - MIN_COHERENCE) / (1.0 - MIN_COHERENCE), 0.0, 1.0))
+    confidence = float(np.clip((coherence - min_coh) / (1.0 - min_coh), 0.0, 1.0))
     if not prof.calibrated:
         confidence *= 0.6  # magnitude is not trustworthy until someone measures d
 

@@ -150,6 +150,11 @@ Consequences, stated plainly:
   confident lie. That is the designed behaviour, and it is why the laptop's live sign-flip test is
   **not verifiable today**: the bench prints `no localized event for the left side — the array could
   not measure this source`.
+- The gate is profile-dependent: **γ² ≥ 0.55 on an uncalibrated array** (vs 0.35 once a spacing has
+  been measured), because an unknown scale can be wrong in magnitude *and* direction. Before that
+  tightening a marginal live window produced one `-90.0°` bearing at `±45°`; after it, live
+  estimates on this laptop are all rejected. A genuine common source measures γ² ≈ 1.0, so the
+  tighter gate costs nothing on a working array — the synthetic sweeps above are unaffected.
 - Everything that does *not* need directionality works on the laptop: onset timing, event cadence,
   classification, transcription, presence (camera), the whole latency chain.
 - On the hat the same code path is used with `--profile hat`; the synthetic sweep above (±6° at

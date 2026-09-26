@@ -93,12 +93,6 @@ class Profile:
             if abs(xs[i] - xs[j]) > 1e-9
         ]
 
-    @property
-    def accuracy_deg(self) -> float:
-        """Placeholder 1-sigma used only when there is no acoustic estimate at
-        all (vision-free, uncalibrated): refusing to pretend is the point."""
-        return 12.0 if self.calibrated else self.uncalibrated_accuracy_deg
-
     def summary(self) -> str:
         sp = "uncalibrated" if self.spacing_m is None else f"{self.spacing_m * 1000:.1f} mm"
         base = "?" if self.baseline_m is None else f"{self.baseline_m * 1000:.0f} mm"

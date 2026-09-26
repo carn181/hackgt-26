@@ -29,7 +29,6 @@ import queue
 import subprocess
 import threading
 import time
-from collections import deque
 
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -106,7 +105,6 @@ class Backend:
         self.rate = self.prof.rate_hz
         self.nsamp = int(round(self.rate * args.block_ms / 1000.0))
         self.ring = RingBuffer(self.prof.nch, int(RING_SECONDS * self.rate))
-        self.ring.rate_hz = self.rate  # used by RingBuffer.t_us_of
         self.detector = OnsetDetector(self.rate)
         # The analysis band-pass: everything downstream (detector, DOA, YAMNet,
         # Whisper, mic health) sees exactly this signal and nothing raw.
