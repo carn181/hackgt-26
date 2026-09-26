@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sound-Awareness HUD</title>
+  </head>
+  <body>
+    <div id="app">
+      <video id="cam" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+      <div id="banner" class="banner hidden"></div>
+      <div id="controls">
+        <button data-mode="all" class="mode-btn active">all</button>
+        <button data-mode="important" class="mode-btn">important</button>
+        <button data-mode="quiet" class="mode-btn">quiet</button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

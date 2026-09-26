@@ -69,12 +69,12 @@ Unchecked P0 items at the 04:00 acceptance run decide what the video is allowed 
 
 ### C — Frontend HUD
 - [ ] C1 App runs, camera opens, WS connects, `backend_status` (model + transport) rendered
-- [ ] C2 Compass + markers render correctly from **fake events** (works before the backend is live)
+- [x] C2 Compass + markers render correctly from **fake events** (works before the backend is live) — C, 14:04
 - [ ] C3 Marker lands within ±10 % frame width for claps at −40°/0°/+40°
-- [ ] C4 Edge chevrons when |bearing| > fov/2; `ambiguous:true` renders two mirrored candidates
+- [x] C4 Edge chevrons when |bearing| > fov/2; `ambiguous:true` renders two mirrored candidates — C, 14:04
 - [ ] C5 Face landmarks + mouth-open state; bubble anchored to the speaking face
 - [ ] C6 Playback-vs-person: loudspeaker speech → marker with **no** face anchor, labelled playback
-- [ ] C7 Urgency tiers: `urgent` displaces other content; `set_mode` all/important/quiet works
+- [x] C7 Urgency tiers: `urgent` displaces other content; `set_mode` all/important/quiet works — C, 14:04
 - [ ] C8 60 fps with camera running; added latency < 50 ms — evidence: measured number in `docs/`
 - [ ] C9 Positions interpolate (no snapping); markers age and fade
 
