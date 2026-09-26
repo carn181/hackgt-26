@@ -3,6 +3,51 @@
 Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
 ticks go in README §0 with the owner+time protocol.
 
+## 2026-09-26 — real fix for phone camera zoom: contain, not a crop correction
+
+Human re-test on the phone (two people, multi-speaker) confirmed the
+viewport clipping fix worked (compass/axis fully visible), but called out
+that the camera itself was still "way too zoomed in, should be natural
+1x" -- and looking at the earlier screenshot, that's a fair diagnosis of
+my previous fix (the `aspectRatio: {ideal: ...}` request from the
+viewport-clipping pass): asking a phone camera for an extreme portrait
+aspect ratio can push it into a hardware-level crop/zoom to manufacture
+that ratio, which is worse than the plain `object-fit: cover` crop I was
+originally correcting for, not better.
+
+Replaced that whole approach:
+
+- `getUserMedia` now requests only `facingMode: {ideal: "environment"}` --
+  no width/height/aspectRatio constraints at all, so the camera gives its
+  plain default (true 1x) mode.
+- `#cam`'s `object-fit` changed from `cover` to `contain` (`style.css`):
+  shows the *entire* camera feed, never crops/magnifies, at the cost of
+  letterbox bars when the video and screen aspect ratios don't match. This
+  is what "natural 1x" actually requires -- cover fundamentally can't
+  provide it when a landscape sensor is shown on a portrait screen, no
+  matter how well-matched the requested aspect ratio is.
+- Removed `effectiveFovDeg` (the previous pass's crop-correction math --
+  dead now, since `contain` never crops, so nothing to correct for) and
+  replaced it with `computeContainRect` (`calib.ts`), which instead
+  computes *where* the video actually sits within the canvas (contain's
+  letterbox rect). Bearing math itself needed zero changes (it's already
+  video-relative, self-consistent regardless of display letterboxing) --
+  only code that converts a video-normalized coordinate into an actual
+  canvas pixel for drawing (face boxes, bubble anchors, in-frame markers)
+  needed to go through this rect instead of the raw canvas size, via new
+  `videoXToCanvasX`/`videoYToCanvasY` helpers. Off-FOV edge arrows and the
+  full-width compass strip are deliberately unaffected -- they're
+  schematic HUD affordances, not tied to video content.
+
+Verified the rect math by hand for both letterbox directions: a portrait
+canvas with a landscape video correctly gets vertical bars with the video
+spanning the full canvas *width* (so old marker math would've stayed
+correct there, by luck); a landscape canvas with a taller-relative video
+gets horizontal bars instead (where old marker math *would* have broken --
+now correctly offset via the rect either way). Full visual confirmation
+of the letterboxing + un-zoomed feed still needs the real phone camera
+(this sandbox has none) -- flagged back to the human.
+
 ## 2026-09-26 — multi-speaker mock test + WS message hardening
 
 Added a second, simultaneous off-FOV speaker to `web/dev/mock-ws.mjs`'s

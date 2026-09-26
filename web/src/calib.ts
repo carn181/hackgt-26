@@ -44,32 +44,40 @@ export function normalizeDeg(deg: number): number {
   return d;
 }
 
+export interface VideoRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 /**
- * The horizontal FOV actually visible on screen after `object-fit: cover`
- * crops the camera feed to fill a container of a different aspect ratio --
- * e.g. a landscape-ish camera stream inside a tall phone viewport gets
- * scaled up until it fills the height, cropping a chunk off the sides. If we
- * fed the raw, uncropped `camera_fov_deg` into the bearing math in that
- * case, every marker would land at the wrong screen position (the visible
- * frame covers less real-world angle than the nominal FOV claims). Returns
- * `camera_fov_deg` unchanged when there's no horizontal crop (including
- * whenever video dimensions aren't known yet).
+ * Where the video is actually drawn within the canvas under
+ * `object-fit: contain` (uniform scale-to-fit, centered -- never crops, so
+ * the camera's full nominal FOV is always genuinely on screen; the tradeoff
+ * is letterbox bars instead of a crop/zoom, which is the whole point: no
+ * hidden magnification, "natural 1x"). Bearing math itself
+ * (bearingToScreenX/screenXToBearingDeg) stays video-relative and needs no
+ * changes for this -- only code that converts a video-normalized coordinate
+ * into an actual canvas pixel (drawing a face box, a bubble anchor, or an
+ * in-frame marker) needs to go through this rect instead of the raw canvas
+ * size, or it'll place things inside a letterbox bar instead of on the
+ * video content.
  */
-export function effectiveFovDeg(
-  videoW: number,
-  videoH: number,
-  canvasW: number,
-  canvasH: number,
-  cameraFovDeg: number
-): number {
-  if (!videoW || !videoH || !canvasW || !canvasH) return cameraFovDeg;
-  const scale = Math.max(canvasW / videoW, canvasH / videoH);
-  const displayedW = videoW * scale;
-  if (displayedW <= canvasW + 0.5) return cameraFovDeg; // height-constrained or exact match: no horizontal crop
-  const visibleFraction = canvasW / displayedW;
-  const halfFovRad = (cameraFovDeg / 2) * (Math.PI / 180);
-  const effHalfFovRad = Math.atan(visibleFraction * Math.tan(halfFovRad));
-  return (effHalfFovRad * 2 * 180) / Math.PI;
+export function computeContainRect(videoW: number, videoH: number, canvasW: number, canvasH: number): VideoRect {
+  if (!videoW || !videoH || !canvasW || !canvasH) return { x: 0, y: 0, w: canvasW, h: canvasH };
+  const scale = Math.min(canvasW / videoW, canvasH / videoH);
+  const w = videoW * scale;
+  const h = videoH * scale;
+  return { x: (canvasW - w) / 2, y: (canvasH - h) / 2, w, h };
+}
+
+export function videoXToCanvasX(xNorm: number, rect: VideoRect): number {
+  return rect.x + xNorm * rect.w;
+}
+
+export function videoYToCanvasY(yNorm: number, rect: VideoRect): number {
+  return rect.y + yNorm * rect.h;
 }
 
 /**

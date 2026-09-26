@@ -26,7 +26,11 @@ html, body {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* contain, not cover: cover was magnifying+cropping a landscape camera
+     stream to fill a portrait screen ("zoomed in"). This shows the full,
+     un-cropped, un-magnified feed -- natural 1x -- at the cost of letterbox
+     bars where the aspect ratios don't match. */
+  object-fit: contain;
   background: #111;
 }
 

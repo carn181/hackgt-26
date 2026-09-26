@@ -1,7 +1,7 @@
 import "./style.css";
 import { HudState } from "./state";
 import { WsClient, resolveWsUrl, type ConnState } from "./ws-client";
-import { DEFAULT_CALIB, effectiveFovDeg, screenXToBearingDeg, normalizeDeg } from "./calib";
+import { computeContainRect, DEFAULT_CALIB, screenXToBearingDeg, normalizeDeg } from "./calib";
 import { detectFaces, initFaceLandmarker, type DetectedFace } from "./faces";
 import { drawOverlay, type FaceAnchor } from "./render";
 import type { BackendMsg, Calibration, Mode } from "./types";
@@ -103,16 +103,15 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>(".mode-btn")) {
 
 async function startCamera() {
   try {
-    // Request a stream shaped like the actual viewport (portrait on a
-    // phone) instead of a fixed landscape ideal -- otherwise object-fit:
-    // cover has to crop a large chunk off the sides to fill a tall
-    // container, which both looks "too zoomed in" and silently shrinks the
-    // real visible FOV below what calib.camera_fov_deg claims (see
-    // effectiveFovDeg in calib.ts, which corrects for whatever crop
-    // actually happens regardless of how good this match turns out to be).
-    const aspect = window.innerWidth / window.innerHeight;
+    // Deliberately no width/height/aspectRatio constraints: asking for a
+    // specific (especially a tall-portrait) aspect ratio can push some
+    // phone cameras into a hardware-level crop/zoom to manufacture that
+    // ratio -- exactly the "too zoomed in, not natural 1x" problem this is
+    // fixing. Plain facingMode gets whatever the camera's default (true
+    // 1x) mode is; object-fit: contain (style.css) then shows it in full,
+    // un-cropped, letterboxed if the aspect doesn't match the screen.
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" }, aspectRatio: { ideal: aspect } },
+      video: { facingMode: { ideal: "environment" } },
       audio: false,
     });
     video.srcObject = stream;
@@ -194,25 +193,20 @@ function frame() {
   state.tick(now / 1000, dtS);
   void detectFacesIfReady();
 
-  // Recomputed every frame since it depends on the video's decoded size
-  // (only known once metadata loads) and the canvas's current CSS size
-  // (which changes on resize/orientation change).
-  const renderCalib: Calibration = {
-    ...calib,
-    camera_fov_deg: effectiveFovDeg(
-      video.videoWidth,
-      video.videoHeight,
-      canvas.clientWidth,
-      canvas.clientHeight,
-      calib.camera_fov_deg
-    ),
-  };
+  // Recomputed every frame: depends on the video's decoded size (only known
+  // once metadata loads) and the canvas's current CSS size (changes on
+  // resize/orientation change). Bearing math itself stays video-relative and
+  // needs no correction under object-fit: contain (it never crops); this
+  // rect is only for placing things (faces, bubbles, in-frame markers) at
+  // the right canvas pixel instead of inside a letterbox bar.
+  const videoRect = computeContainRect(video.videoWidth, video.videoHeight, canvas.clientWidth, canvas.clientHeight);
 
   const renderStart = performance.now();
-  const faceAnchors = computeFaceAnchors(latestFaces, renderCalib);
+  const faceAnchors = computeFaceAnchors(latestFaces, calib);
   drawOverlay(ctx, canvas, {
     state,
-    calib: renderCalib,
+    calib,
+    videoRect,
     faces: latestFaces,
     faceAnchors,
     wsState,

@@ -1,5 +1,12 @@
 import type { Calibration, Urgency } from "./types";
-import { bearingToScreenX, mirrorBearing, normalizeDeg } from "./calib";
+import {
+  bearingToScreenX,
+  mirrorBearing,
+  normalizeDeg,
+  videoXToCanvasX,
+  videoYToCanvasY,
+  type VideoRect,
+} from "./calib";
 import type { HudState, TrackedEvent } from "./state";
 import type { DetectedFace } from "./faces";
 import type { ConnState } from "./ws-client";
@@ -25,6 +32,11 @@ export interface FaceAnchor {
 export interface RenderOptions {
   state: HudState;
   calib: Calibration;
+  /** Where the video is actually drawn within the canvas (object-fit:
+   * contain letterboxing) -- anything placed at a video-normalized
+   * coordinate (faces, bubbles, in-frame markers) must go through this, or
+   * it'll land inside a letterbox bar instead of on the video content. */
+  videoRect: VideoRect;
   faces: DetectedFace[];
   faceAnchors: Map<string, FaceAnchor | null>; // speech id -> matched face (or null = no face)
   wsState: ConnState;
@@ -42,11 +54,11 @@ interface Size {
 }
 
 export function drawOverlay(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, opts: RenderOptions) {
-  const { state, calib } = opts;
+  const { state, calib, videoRect } = opts;
   const size: Size = { w: canvas.clientWidth, h: canvas.clientHeight };
   ctx.clearRect(0, 0, size.w, size.h);
 
-  drawFaces(ctx, size, opts.faces);
+  drawFaces(ctx, videoRect, opts.faces);
 
   const urgent = state.hasUrgent();
   if (urgent) drawUrgentFrame(ctx, size);
@@ -54,14 +66,23 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasEle
   const visible = state.visibleEvents();
   const visibleIds = new Set(visible.map((ev) => ev.id));
   for (const ev of visible) {
-    drawEventMarker(ctx, size, ev, calib, state);
+    drawEventMarker(ctx, size, videoRect, ev, calib, state);
   }
 
   for (const [speechId, s] of state.speech) {
     if (!visibleIds.has(s.parent_event)) continue;
     const ev = state.events.get(s.parent_event);
     const anchor = opts.faceAnchors.get(speechId) ?? null;
-    drawSpeechBubble(ctx, size, s.text, ev?.renderBearing ?? s.bearing_deg, calib, anchor, state.speechAge(s));
+    drawSpeechBubble(
+      ctx,
+      size,
+      videoRect,
+      s.text,
+      ev?.renderBearing ?? s.bearing_deg,
+      calib,
+      anchor,
+      state.speechAge(s)
+    );
   }
 
   drawCompass(ctx, size, visible, calib);
@@ -139,6 +160,7 @@ function drawArrow(
 function drawEventMarker(
   ctx: CanvasRenderingContext2D,
   size: Size,
+  rect: VideoRect,
   ev: TrackedEvent,
   calib: Calibration,
   state: HudState
@@ -154,13 +176,14 @@ function drawEventMarker(
     // otherwise draw on top of each other; offset the second vertically so
     // "two mirrored candidates" stays visually true even then.
     const edgeOffsetY = ev.ambiguous && i === 1 ? 34 : 0;
-    drawOneMarker(ctx, size, bearing, calib, color, baseAlpha, ev, ev.ambiguous, edgeOffsetY);
+    drawOneMarker(ctx, size, rect, bearing, calib, color, baseAlpha, ev, ev.ambiguous, edgeOffsetY);
   });
 }
 
 function drawOneMarker(
   ctx: CanvasRenderingContext2D,
   size: Size,
+  rect: VideoRect,
   bearingDeg: number,
   calib: Calibration,
   color: string,
@@ -182,6 +205,9 @@ function drawOneMarker(
 
   if (xNorm === null) {
     // Off-FOV: point an arrow at the correct screen edge instead of clamping.
+    // This is a schematic "off to the side" affordance, not tied to the
+    // video content (the subject isn't in frame at all), so it stays
+    // relative to the full canvas edge rather than the letterboxed rect.
     const normBearing = normalizeDeg(bearingDeg - calib.head_yaw_offset_deg);
     const atRightEdge = normBearing > 0;
     const arrowX = atRightEdge ? size.w - 20 : 20;
@@ -191,7 +217,9 @@ function drawOneMarker(
     ctx.textBaseline = "alphabetic";
     outlinedText(ctx, label, atRightEdge ? size.w - 34 : 34, edgeY - 20, color);
   } else {
-    const x = xNorm * size.w;
+    // In-FOV: this bearing corresponds to a real point in the video, so its
+    // x must go through the letterbox rect, not the raw canvas width.
+    const x = videoXToCanvasX(xNorm, rect);
     drawArrow(ctx, x, y, Math.PI / 2, arrowSize, color, ambiguous);
     if (ambiguous) drawDashedRing(ctx, x, y, arrowSize * 0.9, color);
     ctx.textAlign = "center";
@@ -245,6 +273,7 @@ const BUBBLE_PALETTE: Record<BubbleStyle, { fill: string; stroke: string; dashed
 function drawSpeechBubble(
   ctx: CanvasRenderingContext2D,
   size: Size,
+  rect: VideoRect,
   text: string,
   bearingDeg: number,
   calib: Calibration,
@@ -257,15 +286,18 @@ function drawSpeechBubble(
   let tipY: number;
   let style: BubbleStyle;
   if (anchor) {
-    tipX = anchor.face.centerXNorm * size.w;
-    tipY = (anchor.face.bboxNorm.y + anchor.face.bboxNorm.h * 0.85) * size.h; // ~mouth height
+    // A face box is a real point in the video -- goes through the rect.
+    tipX = videoXToCanvasX(anchor.face.centerXNorm, rect);
+    tipY = videoYToCanvasY(anchor.face.bboxNorm.y + anchor.face.bboxNorm.h * 0.85, rect); // ~mouth height
     style = "anchored";
   } else {
     const xNorm = bearingToScreenX(bearingDeg, calib);
     if (xNorm !== null) {
-      tipX = xNorm * size.w;
+      tipX = videoXToCanvasX(xNorm, rect);
       style = "maybePlayback";
     } else {
+      // Off-FOV: docks next to the edge arrow, which is canvas-edge-relative
+      // (not video content), so no rect conversion here either.
       const normBearing = normalizeDeg(bearingDeg - calib.head_yaw_offset_deg);
       tipX = normBearing > 0 ? size.w - 20 : 20;
       style = "directional";
@@ -339,15 +371,15 @@ function drawTailedBubble(
   ctx.restore();
 }
 
-function drawFaces(ctx: CanvasRenderingContext2D, size: Size, faces: DetectedFace[]) {
+function drawFaces(ctx: CanvasRenderingContext2D, rect: VideoRect, faces: DetectedFace[]) {
   ctx.save();
   ctx.strokeStyle = "rgba(255,255,255,0.35)";
   ctx.lineWidth = 1;
   for (const f of faces) {
-    const x = f.bboxNorm.x * size.w;
-    const y = f.bboxNorm.y * size.h;
-    const w = f.bboxNorm.w * size.w;
-    const h = f.bboxNorm.h * size.h;
+    const x = videoXToCanvasX(f.bboxNorm.x, rect);
+    const y = videoYToCanvasY(f.bboxNorm.y, rect);
+    const w = f.bboxNorm.w * rect.w;
+    const h = f.bboxNorm.h * rect.h;
     ctx.strokeRect(x, y, w, h);
     if (f.mouthOpen) {
       ctx.fillStyle = "#7CFC9A";
@@ -412,7 +444,7 @@ function drawDebugPanel(ctx: CanvasRenderingContext2D, opts: RenderOptions) {
   const as = opts.state.arrayStatus;
   lines.push(`ws: ${opts.wsState}${opts.rttMs !== null ? `  rtt ${opts.rttMs.toFixed(0)}ms` : ""}`);
   lines.push(`mode: ${opts.state.mode}   fps: ${opts.fps.toFixed(0)}`);
-  lines.push(`fov: ${opts.calib.camera_fov_deg.toFixed(1)}° (effective, post-crop)`);
+  lines.push(`fov: ${opts.calib.camera_fov_deg.toFixed(1)}° (nominal; contain never crops it)`);
   if (opts.addedLatencyMs !== null) lines.push(`added latency: ${opts.addedLatencyMs.toFixed(1)}ms`);
   if (bs) {
     lines.push(`model: ${bs.model} sha:${bs.model_sha256.slice(0, 8)} (${bs.classes} cls)`);
