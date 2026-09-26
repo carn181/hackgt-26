@@ -655,6 +655,11 @@ class BrowserSource(_BaseSource):
             if int(seq) == 0:
                 self._next_seq = None
             self._count_seq(int(seq))
+        if self.frames == 0:
+            # Rate is measured over the *active* window: the page may take a minute
+            # to open, and counting that idle time made /health report ~10 kHz for
+            # a stream that is exactly 16 kHz.
+            self.stats.start_mono = now
         self.last_frame_mono = now
         self.last_client_t = t_client
 
