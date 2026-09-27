@@ -297,7 +297,7 @@ Straight bar on the brim. Spacing 80 mm ⇒ total baseline 240 mm. Aliasing limi
 
 | Path | Owner | Contents |
 |---|---|---|
-| `esp32/` | **A** | PlatformIO firmware; wiring map; `esp32/HAT.md` build notes |
+| `esp32/` | **A** | Arduino-IDE firmware (`esp32/aura4/`); wiring map; `esp32/HAT.md` build notes |
 | `server/` | **B** | UDP/USB ingest, DOA, YAMNet, Whisper, fusion, WS |
 | `web/` | **C** | Vite + TS: camera, HUD, bubbles |
 | `config/` | **A** owns edits | `array.json`, `calib.json` |
@@ -324,7 +324,7 @@ require a README edit in the same commit; `main` must stay runnable.
 > You are in `~/hackgt-26` during a 36-hour hackathon; ~20 h remain. Read §1, §3, §4, §7.1 of `README.md`
 > first — §4 is frozen. You own `esp32/**` and `config/array.json`. Do not touch `server/**`, `web/**`, `models/**`.
 >
-> **Deliverable:** PlatformIO firmware for **ESP32-S3** that
+> **Deliverable:** Arduino-IDE firmware (`esp32/aura4/aura4.ino`) for **ESP32-S3** that
 > 1. captures **4× ICS-43434** as two stereo pairs: bus 0 = mics 0/1, bus 1 = mics 2/3, 16 kHz, 32-bit slots;
 > 2. emits the §4.2 packets over **UDP** *and* over **USB-CDC serial** (same bytes, `--transport` build flag) —
 >    the USB path is the Expo insurance policy;
