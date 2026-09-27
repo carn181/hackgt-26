@@ -6,12 +6,13 @@
 # C-HUD Vision
 
 **A cap that shows you where a sound came from.** Four microphones on the brim, a laptop backend that
-localizes and classifies what it hears, and a camera HUD that marks the direction, names the class, and
-anchors live captions to the face that spoke.
+localizes and classifies what it hears, and a **phone HUD** — live camera plus a canvas overlay — that marks
+the direction, names the class, and anchors live captions to the face that spoke.
 
-Built at **HackGT 26** (`hackgt-26`) for d/Deaf and hard-of-hearing wearers. Phone transcription apps make
-you look down at a screen — losing eye contact and the sense of *where* a sound is. C-HUD keeps the answer
-in the wearer's own frame: direction from a head-worn array, shown without asking them to look away.
+Built at **HackGT 26** (`hackgt-26`) for d/Deaf and hard-of-hearing wearers. Phone transcription apps give you
+the words but not the *who* or the *where*: they listen from a hand-held microphone and show an unattributed
+wall of text. C-HUD puts the array on the wearer's head, so a bearing means "to my left", and reuses the phone
+already in their pocket as the screen — no headset, no extra hardware to buy.
 
 ## What it does
 
