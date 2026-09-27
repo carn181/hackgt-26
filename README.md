@@ -188,4 +188,7 @@ the parts list, the calibration procedure, and the traps list. Section numbers a
 | §7–8 | Hat build, calibration, model setup, platform hazards |
 | §9–12 | Time plan, demo script, references, traps ranked by time cost |
 
+`docs/video-script.md` is the 2-minute shoot script that supersedes §10: beat sheet with verbatim VO, the sound
+menu with the tier each sound maps to, the pre-roll checklist, and the list of things the video may not claim.
+
 </details>
