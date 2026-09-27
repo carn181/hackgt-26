@@ -16,6 +16,13 @@ already in their pocket as the screen — no headset, no extra hardware to buy.
 
 **[Devpost submission](https://devpost.com/software/chud)** · HackGT 26 · built in 36 hours by a four-person team
 
+![The C-HUD HUD running: a live camera view with a caption bubble anchored to the speaker's face, a bearing compass along the bottom edge, class confidences at the right, a diagnostics readout top-left. Inset: two people at a table demo, the cap on one wearer's head.](docs/img/hud-capture.jpg)
+
+*Live capture, revision `df931b8`: a caption bubble anchored to the speaker's face, the bearing compass along the
+bottom (`B · L · R · B`), class confidences at the right, and the diagnostics chip — `ws: open`, `rtt: 35 ms`,
+`fps: 52`, `added latency: 0.3 ms`, `model: yamnet sha:10c95ea3 (521 cls)`, `transport: browser`. Inset: the cap
+on a wearer, with a second person watching the same feed.*
+
 ## What it does
 
 | Feature | Status | Where it lives |
