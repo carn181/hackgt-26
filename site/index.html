@@ -63,6 +63,11 @@
   .stat b{display:block;font:600 24px/1.2 system-ui;letter-spacing:-.01em}
   .stat span{font:11px/1.35 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
   section{padding:44px 0 0}
+  .shot figure{margin:0}
+  .shot img{width:100%;height:auto;display:block;border-radius:16px;border:1px solid var(--line);background:#04070D}
+  .shot figcaption{margin-top:12px;font:12.5px/1.7 var(--mono);color:var(--dim)}
+  .shot figcaption b{color:var(--paper);font-weight:600}
+  .shot figcaption code{font-size:11.5px}
   h2{font:600 13px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--cyan);
      margin:0 0 18px;padding-bottom:10px;border-bottom:1px solid var(--line)}
   h3{margin:0 0 6px;font-size:17px;letter-spacing:-.01em}
@@ -146,6 +151,20 @@
       <div class="stat"><b>0</b><span>cloud services</span></div>
     </div>
   </header>
+
+  <section class="shot">
+    <figure>
+      <img src="hud-capture.jpg" width="1920" height="1001" loading="lazy" decoding="async"
+           alt="The C-HUD HUD running: a live camera view with a caption bubble anchored to the speaker's face, a bearing compass along the bottom edge, class confidences at the right and a diagnostics readout top-left. Inset: two people at a table demo, the cap on one wearer's head.">
+      <figcaption>
+        Live capture, revision <code>df931b8</code>: a caption bubble anchored to the speaker's face, the bearing
+        compass along the bottom (<b>B</b> · <b>L</b> · <b>R</b> · <b>B</b>), class confidences at the right, and the
+        diagnostics chip — <code>ws: open</code>, <code>rtt: 35 ms</code>, <code>fps: 52</code>,
+        <code>added latency: 0.3 ms</code>, <code>yamnet 521 cls</code>, <code>transport: browser</code>.
+        Inset: the cap on a wearer, with a second person watching the same feed.
+      </figcaption>
+    </figure>
+  </section>
 
   <section>
     <h2>The gap</h2>
