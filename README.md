@@ -14,6 +14,8 @@ the words but not the *who* or the *where*: they listen from a hand-held microph
 wall of text. C-HUD puts the array on the wearer's head, so a bearing means "to my left", and reuses the phone
 already in their pocket as the screen — no headset, no extra hardware to buy.
 
+**[Devpost submission](https://devpost.com/software/chud)** · HackGT 26 · built in 36 hours by a four-person team
+
 ## What it does
 
 | Feature | Status | Where it lives |
