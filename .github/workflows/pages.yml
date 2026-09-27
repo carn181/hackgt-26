@@ -1,0 +1,36 @@
+name: site
+
+# Publishes site/ to GitHub Pages (behindyou.tech). No build step: the page is a single
+# self-contained index.html with no dependencies, so the artifact is the folder.
+# Manual until Pages is switched on (Settings -> Pages -> Source: GitHub Actions): the first
+# run of configure-pages fails while Pages is disabled, and a red X on main at 06:00 is noise.
+# Once Pages is enabled, uncomment the push trigger below to deploy on every site change.
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  #   paths: ["site/**", ".github/workflows/pages.yml"]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

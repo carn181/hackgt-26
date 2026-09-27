@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"
+     role="img" aria-label="C-HUD">
+  <title>C-HUD</title>
+  <rect width="512" height="512" rx="112" fill="#060B14"/>
+  <g transform="translate(26.67 26.67) scale(1.7917)">
+      <path d="M188.42 69.65A84 84 0 1 0 188.42 186.35" fill="none" stroke="#1FD8FF" stroke-width="26.88"/>
+      <circle cx="90.32" cy="101.62" r="20.14" fill="#FFB020"/>
+  </g>
+</svg>
