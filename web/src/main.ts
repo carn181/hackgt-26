@@ -100,7 +100,31 @@ const ws = new WsClient({
       case "backend_status":
         state.ingestBackendStatus(msg);
         break;
-      case "timeline":
+      case "timeline": {
+        // Replayed on every (re)connect so a client that just joined sees
+        // recent history -- but the backend's replay buffer is a count cap,
+        // not a time window (server/fuse.py's `_by_id` keeps the last 60
+        // regardless of age), so it can easily hand back something from
+        // minutes ago. Stamping every replayed event as `nowS` -- as if it
+        // just happened -- resets its 4.5s TTL (state.ts EVENT_TTL_S) on
+        // every single reconnect. For an `urgency: "urgent"` event that
+        // means a *stale* misclassification (a clap YAMNet once read as
+        // "Gunshot, gunfire" -- a well-known false positive for sharp
+        // transients) can re-trigger the full-screen urgent takeover
+        // (render.ts drawUrgentFrame) forever on a flaky connection,
+        // instead of a one-off 4.5s flash: on this WiFi, reconnects were
+        // observed happening repeatedly, which is exactly what turned "a
+        // clap got misread once" into "the camera looks permanently
+        // blacked out, reloading doesn't help" -- a reload just triggers
+        // another reconnect, another replay, another reset.
+        //
+        // Fix: reconstruct each event's real local-equivalent timestamp
+        // from its own backend-relative `t` instead of trusting the replay
+        // to mean "just now". `msg.t` (this timeline message's own send
+        // time) vs. `nowS` (when we received it) gives the current
+        // backend-clock-to-local-clock offset; apply that same offset to
+        // each event's own `t` so a truly old event still reads as old.
+        const backendToLocalOffsetS = nowS - msg.t;
         for (const ev of msg.events) {
           // Each array element only gets the top-level `events` array itself
           // checked by validateBackendMsg, not each entry -- re-validate here
@@ -110,10 +134,12 @@ const ws = new WsClient({
             console.warn("[ws] dropped malformed timeline entry", ev);
             continue;
           }
-          if (validated.msg.type === "sound_event") state.ingestSoundEvent(validated.msg, nowS);
-          else if (validated.msg.type === "speech") state.ingestSpeech(validated.msg, nowS);
+          const localT = validated.msg.t + backendToLocalOffsetS;
+          if (validated.msg.type === "sound_event") state.ingestSoundEvent(validated.msg, localT);
+          else if (validated.msg.type === "speech") state.ingestSpeech(validated.msg, localT);
         }
         break;
+      }
       case "presence":
         break; // not rendered yet; reserved for a future presence indicator
       case "hat_status":
