@@ -20,6 +20,8 @@ import {
 import { drawOverlay, type FaceAnchor } from "./render";
 import { MicStream } from "./mic";
 import { OrientationTracker } from "./orientation";
+import { HatTracker } from "./hat";
+import { VoiceCommandListener } from "./voice";
 import type { BackendMsg, Calibration, Mode } from "./types";
 import { validateBackendMsg } from "./validate";
 
@@ -114,6 +116,9 @@ const ws = new WsClient({
         break;
       case "presence":
         break; // not rendered yet; reserved for a future presence indicator
+      case "hat_status":
+        hat.ingest(msg, nowS);
+        break;
     }
   },
 });
@@ -213,6 +218,62 @@ orientBtn.addEventListener("click", () => {
   }
   void orientation.start();
 });
+
+// ---------------------------------------------------------------------------
+// ESP32 hat -- its own on-device direction guess, relayed by the backend
+// ---------------------------------------------------------------------------
+// Opt-in like the imu: the backend relays the hat's broadcast to every client
+// regardless, but a laptop demo with no hat powered on shouldn't sit on a red
+// "timeout" button from the moment the page loads.
+const hat = new HatTracker();
+const hatBtn = document.getElementById("hat-btn") as HTMLButtonElement;
+
+function paintHatButton() {
+  const s = hat.status;
+  hatBtn.classList.toggle("active", s.state === "connected");
+  hatBtn.classList.toggle("error", s.state === "timeout");
+  // The hat reports a `dir` continuously (it's just whichever mic is
+  // loudest right now), but that's meaningless room noise until its own
+  // `active` gate says something actually spiked above baseline -- so a
+  // connected-but-quiet hat reads "listening", not a stale/random direction.
+  hatBtn.textContent =
+    s.state === "connected"
+      ? s.active
+        ? `hat: ${s.dir}`
+        : "hat: listening"
+      : s.state === "connecting"
+        ? "connecting..."
+        : s.state === "timeout"
+          ? "no hat"
+          : "connect";
+  hatBtn.title =
+    s.state === "timeout"
+      ? "hat: nothing heard for 3s -- is it powered and on this Wi-Fi? Still listening; tap to retry"
+      : "Connect to the ESP32 hat's direction broadcast (a LAN broadcast the backend relays -- no hat IP needed). Say \"connect\" to do this hands-free";
+}
+
+hat.onStatus = () => paintHatButton();
+paintHatButton();
+
+hatBtn.addEventListener("click", () => {
+  if (hat.status.state === "idle" || hat.status.state === "timeout") hat.connect();
+  else hat.disconnect();
+  paintHatButton();
+});
+
+// Only ever connects: a stray recognition of "connect" while already
+// connected must be a no-op, not a toggle that silently drops the hat.
+const voice = new VoiceCommandListener(["connect"]);
+voice.onCommand = (word) => {
+  if (word === "connect" && (hat.status.state === "idle" || hat.status.state === "timeout")) {
+    hat.connect();
+    paintHatButton();
+  }
+};
+// Started at load alongside the mic, not behind a tap: where it's supported
+// the only prompt is the same mic permission startMic() already asks for,
+// and where it isn't, start() just settles on "unsupported".
+voice.start();
 
 async function startCamera() {
   try {
@@ -546,6 +607,8 @@ Object.defineProperty(window, "__hud", {
     ws: () => ({ state: wsState, rttMs }),
     mic: () => mic.status,
     orientation: () => orientation.status,
+    hat: () => hat.status,
+    voice: () => voice.state,
     faces: () => latestFaces,
     posesReady: () => posesReady,
     calib: () => calib,

@@ -18,6 +18,7 @@ function isStr(v: unknown): v is string {
 }
 
 const URGENCIES = new Set(["low", "normal", "high", "urgent"]);
+const HAT_DIRS = new Set(["LEFT", "RIGHT", "FRONT", "BACK"]);
 
 export interface ValidationResult {
   msg: BackendMsg;
@@ -87,6 +88,17 @@ export function validateBackendMsg(raw: unknown): ValidationResult | null {
     }
     case "pong": {
       if (!isNum(raw.t_echo)) return null;
+      return { msg: raw as unknown as BackendMsg, warnings };
+    }
+    case "hat_status": {
+      if (!isNum(raw.m1) || !isNum(raw.m2) || !isNum(raw.m3) || !isNum(raw.m4) || !isNum(raw.loudest)) return null;
+      if (!HAT_DIRS.has(raw.dir as string)) {
+        warnings.push(`dir ${JSON.stringify(raw.dir)} invalid -> 'LEFT'`);
+        raw.dir = "LEFT";
+      }
+      if (!isNum(raw.t_ms)) raw.t_ms = 0;
+      if (typeof raw.active !== "boolean") raw.active = false;
+      if (!isStr(raw.fw)) raw.fw = "unknown";
       return { msg: raw as unknown as BackendMsg, warnings };
     }
     default:

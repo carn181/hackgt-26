@@ -27,6 +27,7 @@ import contextlib
 import json
 import logging
 import queue
+import socket
 import subprocess
 import threading
 import time
@@ -129,6 +130,7 @@ class Backend:
         self._epoch_mono: float | None = None
         self._due: list[tuple[int, str, object]] = []
         self._thread = None
+        self._hat_thread: threading.Thread | None = None
         self._stop = False
         self.source_stats_at_connect: dict = {}
         self._git_rev = self._read_git_rev()
@@ -249,6 +251,12 @@ class Backend:
         if self.transcriber is not None:
             self._asr_thread = threading.Thread(target=self._asr_worker, name="asr", daemon=True)
             self._asr_thread.start()
+        # Independent of --source: the hat now broadcasts its own on-device
+        # direction guess rather than raw audio, so its status is worth relaying
+        # whatever is feeding the audio pipeline (usually the phone's mic).
+        if self.args.hat_port:
+            self._hat_thread = threading.Thread(target=self._hat_relay_worker, name="hat-relay", daemon=True)
+            self._hat_thread.start()
 
     def stop(self) -> None:
         self._stop = True
@@ -270,6 +278,45 @@ class Backend:
         except Exception:  # a dead pipeline must be loud, and must not look like silence
             log.exception("pipeline stopped")
             raise
+
+    def _hat_relay_worker(self) -> None:
+        """Relay the ESP32's `hat_status` UDP broadcast onto the WebSocket.
+
+        A browser cannot receive raw UDP, and the hat broadcasts rather than
+        unicasting so nobody has to flash a backend IP into it -- this is the
+        one place on the LAN that can hear it and reach the HUD. The hat is a
+        hand-soldered board still being debugged, so a bad packet is skipped,
+        never allowed to take the thread down.
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("0.0.0.0", self.args.hat_port))
+        except OSError as e:
+            # Optional hardware: a taken port costs the hat button, not the backend.
+            log.warning("hat relay disabled: cannot bind udp/%d (%s)", self.args.hat_port, e)
+            sock.close()
+            return
+        sock.settimeout(0.5)  # so the loop notices self._stop
+        log.info("hat relay listening on udp/%d", self.args.hat_port)
+        try:
+            while not self._stop:
+                try:
+                    data, _addr = sock.recvfrom(2048)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                try:
+                    msg = json.loads(data)
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(msg, dict) or msg.get("type") != "hat_status":
+                    continue
+                msg["t"] = self._t_now()
+                self.hub.publish(msg)
+        finally:
+            sock.close()
 
     def _consume(self, blk) -> None:
         # One conditioned copy feeds everything: ring buffer, detector, DOA,
@@ -820,6 +867,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--loop", action="store_true", help="loop the file")
     p.add_argument("--device", default=None, help="pw-record --target (node name or serial)")
     p.add_argument("--udp-port", type=int, default=7000)
+    p.add_argument("--hat-port", type=int, default=7010,
+                   help="UDP port the ESP32's hat_status broadcast is relayed from (0 = disabled)")
     p.add_argument("--serial-port", default=None, help="/dev/ttyACM0 for --source serial")
     p.add_argument("--auto-wait", type=float, default=2.0, help="seconds to wait for hat packets in --source auto")
     p.add_argument("--block-ms", type=float, default=20.0)

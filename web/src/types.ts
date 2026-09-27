@@ -83,6 +83,35 @@ export interface PongMsg {
   t_echo: number;
 }
 
+export type HatDirection = "LEFT" | "RIGHT" | "FRONT" | "BACK";
+
+/**
+ * Additive: the ESP32 hat's own UDP broadcast (esp32/README.md), relayed
+ * verbatim by the backend with its clock stamped on as `t`. `m1..m4` are raw
+ * per-mic RMS for left/right/front/back, `dir` is the hat's coarse
+ * loudest-mic guess -- not a calibrated bearing. `t_ms` is the hat's own
+ * millis(), unrelated to either the backend or page clock.
+ *
+ * `active` is the hat's own "is this a real event, or just room noise"
+ * gate (loudest mic spiked well above its slow-moving baseline) -- `dir` is
+ * only meaningful while this is true. Room tone/self-noise keeps `dir`
+ * updating too, it's just noise chasing noise; the UI should not treat that
+ * as someone calling.
+ */
+export interface HatStatusMsg {
+  type: "hat_status";
+  t: number;
+  t_ms: number;
+  m1: number;
+  m2: number;
+  m3: number;
+  m4: number;
+  loudest: number;
+  dir: HatDirection;
+  active: boolean;
+  fw: string;
+}
+
 export type BackendMsg =
   | SoundEvent
   | SpeechMsg
@@ -90,7 +119,8 @@ export type BackendMsg =
   | ArrayStatus
   | BackendStatus
   | TimelineMsg
-  | PongMsg;
+  | PongMsg
+  | HatStatusMsg;
 
 export interface SetModeMsg {
   type: "set_mode";
