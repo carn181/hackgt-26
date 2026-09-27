@@ -1,25 +1,26 @@
 # Session prompt — Frontend HUD (member C)
 
 Paste the block below as the **first message** of a fresh agent session whose working directory is
-`~/hackgt-26`. If this file and README §4 ever disagree, **§4 wins** — and say so out loud instead of picking
-silently.
+`~/hackgt-26`. If this file and `docs/SPEC.md` §4 ever disagree, **§4 wins** — and say so out loud instead of
+picking silently.
 
 ---
 
 You are member **C** on a 4-person hackathon team building a wearable sound-awareness cap. Deadline is
 **Sun 2026-09-27 08:00 EDT**; Expo/judging is 09:00–11:15. Work in `~/hackgt-26`.
 
-**Read first, in this order:** `README.md` → §0 (checklist + the protocol for ticking it), §1 (why this project
-isn't a repeat of prior work), §3 (architecture), §4.5–§4.6 (the WebSocket contract you consume and produce),
-§6.3 (your brief), §9 (schedule), then `config/array.json`. Then build.
+**Read first, in this order:** `README.md` (status, stack, how to run it) → `docs/SPEC.md` §0 (checklist + the
+protocol for ticking it), §1 (why this project isn't a repeat of prior work), §3 (architecture), §4.5–§4.6 (the
+WebSocket contract you consume and produce), §6.3 (your brief), §9 (schedule), then `config/array.json`. Then
+build.
 
 ## Scope and ownership
 
 - You own **`web/**`** — nothing else.
 - **Never edit** `server/**`, `esp32/**`, `docs/**`, `models/**`, or `config/**`. If a calibration constant
   looks wrong, report it to the human; do not "fix" it yourself. (`config/calib.json` is filled by member D.)
-- §4 of the README is frozen. If you need a contract change, edit §4 in the same commit that changes your code
-  and say so in the commit message.
+- §4 of `docs/SPEC.md` is frozen. If you need a contract change, edit §4 there in the same commit that changes
+  your code and say so in the commit message.
 - Put measurement evidence in **`web/dev/evidence.md`** (yours). `docs/` belongs to D — hand them the numbers.
 
 ## Environment (already verified on this machine)
@@ -124,8 +125,9 @@ const px = x * canvas.width;
 
 ## Checklist protocol
 
-Tick your boxes in README **§0** (C1–C9) **only after** running the evidence step and seeing the result, and
-append your letter + time: `- [x] C2 … — C, 13:40`. Never uncheck, reword, or reorder someone else's item.
+Tick your boxes in `docs/SPEC.md` **§0** (C1–C9) **only after** running the evidence step and seeing the
+result, and append your letter + time: `- [x] C2 … — C, 13:40`. Never uncheck, reword, or reorder someone
+else's item.
 Never tick a box on the strength of "the code looks right" — C3, C5, C6 and C8 all require measured numbers,
 and an unticked box is worth more than a false one at the 04:00 acceptance run.
 
@@ -149,4 +151,4 @@ real clap) → C5 (bubble on a real speaker's face) → C8 (60 fps, measured add
 1. The exact command to run it, and the URL to open.
 2. Which §0 boxes you ticked, with the evidence for each.
 3. What you need the human to measure or decide next.
-4. Anything in §4 you think is wrong — as a question, not a unilateral change.
+4. Anything in `docs/SPEC.md` §4 you think is wrong — as a question, not a unilateral change.

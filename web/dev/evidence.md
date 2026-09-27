@@ -1,7 +1,7 @@
 # Frontend (member C) — dev evidence log
 
 Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
-ticks go in README §0 with the owner+time protocol.
+ticks go in `docs/SPEC.md` §0 with the owner+time protocol.
 
 ## 2026-09-26 — body-detection fallback + camera resolution/focus, on reeves-body-detection
 
