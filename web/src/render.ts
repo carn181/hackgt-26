@@ -462,9 +462,14 @@ function drawFaces(
     const h = f.bboxNorm.h * size.h;
     const isLocked = f.trackId === lockedSpeakerTrackId;
 
-    ctx.strokeStyle = isLocked ? URGENCY_COLOR.normal : "rgba(255,255,255,0.35)";
+    // A body-only fallback (too far for a face) has no mouth signal at all,
+    // so it can never hold the speaker lock -- dashed and dimmer marks it as
+    // "a person, position only" rather than a real face detection.
+    ctx.setLineDash(f.hasFace ? [] : [3, 3]);
+    ctx.strokeStyle = isLocked ? URGENCY_COLOR.normal : f.hasFace ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.2)";
     ctx.lineWidth = isLocked ? 2.5 : 1;
     ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
 
     if (f.mouthActive) {
       ctx.fillStyle = "#7CFC9A";
@@ -473,7 +478,9 @@ function drawFaces(
       ctx.fill();
     }
 
-    const label = `#${f.trackId} open:${f.mouthOpenScore.toFixed(2)} rev:${f.mouthActivity}${isLocked ? " SPEAKING" : ""}`;
+    const label = f.hasFace
+      ? `#${f.trackId} open:${f.mouthOpenScore.toFixed(2)} rev:${f.mouthActivity}${isLocked ? " SPEAKING" : ""}`
+      : `#${f.trackId} body only (no mouth signal)`;
     outlinedText(ctx, label, x, y - 4, isLocked ? URGENCY_COLOR.normal : "#fff", 2);
   }
   ctx.restore();

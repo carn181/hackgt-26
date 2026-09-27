@@ -3,6 +3,54 @@
 Owner: C. Append entries; don't rewrite history. Raw evidence only — checklist
 ticks go in README §0 with the owner+time protocol.
 
+## 2026-09-26 — body-detection fallback + camera resolution/focus, on reeves-body-detection
+
+Two problems from live testing at range (~1.5m+): a face too small/far for
+FaceLandmarker to resolve fell all the way through to an unanchored,
+center-defaulted speech bubble even though a real person was visible and
+talking; and the camera image itself looked soft at that same distance.
+
+**Body fallback**: `@mediapipe/tasks-vision` already ships `PoseLandmarker`
+(confirmed in the installed package's own type defs, not guessed -- no new
+dependency), same `createFromOptions`/`detectForVideo` shape as
+`FaceLandmarker`. `faces.ts` now also runs pose detection
+(`pose_landmarker_lite`, fetched and committed the same way
+`face_landmarker.task` was -- `web/public/models/pose_landmarker_lite.task`,
+local-first with the same CDN fallback pattern) and derives an approximate
+head/neck bbox per detected body from BlazePose's fixed nose/shoulder
+landmarks (indices 0/11/12). `mergeFacesAndBodies()` only adds a body entry
+when no real face already covers roughly the same position, so a body
+detection can never crowd out or conflict with a real face -- it strictly
+fills in people who'd otherwise have no anchor at all. Deliberately
+honest about the limit: a body-only entry (`hasFace: false`) carries no
+mouth signal whatsoever, so it can never win the speaker lock -- it gives a
+real position, not speaker discrimination, exactly the tradeoff named in
+the plan. Rendered dashed/dimmer than a real face box, and the debug label
+says "body only (no mouth signal)" instead of the usual open/rev numbers.
+
+**Camera fixes**: re-added `width`/`height` *ideal* hints (1920x1080) to
+`getUserMedia` -- deliberately still no `aspectRatio`, since that
+constraint specifically was what caused the earlier hardware-zoom bug, not
+a resolution hint on its own. Also added a feature-detected tap-to-refocus
+handler on the video element: checks `track.getCapabilities().focusMode`
+before doing anything, and only wires up `pointsOfInterest` if the
+capability list actually includes it; where the platform exposes no focus
+control at all (researched, not guessed: this is Android-Chrome-only --
+explicitly unsupported on iOS Safari and even desktop Chrome), the tap is
+a no-op and says so in the console rather than pretending to work.
+
+Verified in this sandbox (no camera, so no real detection or focus
+control to exercise): clean build, `window.__hud.posesReady()` true after
+a fresh load (the pose model -- local file this time, no CDN round trip --
+loads without throwing), no new console errors. **Everything else needs
+the phone**: does a body-only anchor actually land a bubble on a distant
+talking person instead of center-defaulting; does the resolution bump
+alone fix the blur (check this *before* judging tap-to-focus, no point
+tuning manual focus against a low-res feed); does tap-to-focus do
+anything at all on the test device; and whether two MediaPipe models
+running every frame costs enough fps to need the "only run pose when face
+count is low" throttle flagged as a follow-up in the plan.
+
 ## 2026-09-26 — phone orientation sensor, on the new reeves-imu-orientation branch
 
 New feature (README §3's "phone held in front of the face" caveat: a static

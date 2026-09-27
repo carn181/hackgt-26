@@ -9,7 +9,14 @@ import {
   normalizeDeg,
   videoNormToCropNorm,
 } from "./calib";
-import { detectFaces, initFaceLandmarker, type DetectedFace } from "./faces";
+import {
+  detectBodies,
+  detectFaces,
+  initFaceLandmarker,
+  initPoseLandmarker,
+  mergeFacesAndBodies,
+  type DetectedFace,
+} from "./faces";
 import { drawOverlay, type FaceAnchor } from "./render";
 import { MicStream } from "./mic";
 import { OrientationTracker } from "./orientation";
@@ -27,6 +34,7 @@ let haveArrayStatus = false;
 let wsState: ConnState = "connecting";
 let rttMs: number | null = null;
 let facesReady = false;
+let posesReady = false;
 let latestFaces: DetectedFace[] = [];
 let addedLatencyMs: number | null = null;
 
@@ -208,27 +216,78 @@ orientBtn.addEventListener("click", () => {
 
 async function startCamera() {
   try {
-    // Deliberately no width/height/aspectRatio constraints: asking for a
-    // specific (especially a tall-portrait) aspect ratio can push some
-    // phone cameras into a hardware-level crop/zoom to manufacture that
-    // ratio -- that was the actual cause of an earlier "too zoomed in, not
-    // natural 1x" bug. Plain facingMode gets whatever the camera's default
-    // (true 1x) mode is; object-fit: cover (style.css) then fills the
-    // screen with it edge-to-edge like a normal camera viewfinder, and
-    // whatever that crops is compensated for in the bearing math below
-    // instead (effectiveFovDeg), not avoided.
+    // No aspectRatio constraint -- that was the actual cause of an earlier
+    // "too zoomed in, not natural 1x" bug (it pushed some phone cameras into
+    // a hardware-level crop/zoom to manufacture the requested ratio).
+    // width/height *ideal* hints are different: they're a soft resolution
+    // preference, not a shape constraint, so they don't reintroduce that
+    // bug -- and without them, some phones default to a fairly low-res
+    // capture mode, which object-fit: cover then scales up to fill the
+    // screen. That upscaling can look exactly like an out-of-focus lens.
+    // Ask for a decent resolution before reaching for focus-control APIs.
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
       audio: false,
     });
     video.srcObject = stream;
     await video.play();
+    initTapToFocus(stream.getVideoTracks()[0]);
   } catch (err) {
     // Non-fatal: keep the WS connection, debug panel and render loop alive
     // even without a camera, so the HUD is still inspectable/testable.
     setCameraBanner(`camera error: ${(err as Error).message}`);
     console.warn("camera unavailable", err);
   }
+}
+
+// Extended, non-standard MediaTrack capability/constraint fields TypeScript's
+// bundled DOM lib doesn't know about -- real (see orientation.ts's research
+// note style), just not universally supported: Chrome-on-Android exposes
+// them, iOS Safari and desktop Chrome do not.
+interface FocusCapabilities {
+  focusMode?: string[];
+  focusDistance?: { min: number; max: number; step: number };
+}
+interface FocusConstraintSet {
+  focusMode?: string;
+  focusDistance?: number;
+  pointsOfInterest?: { x: number; y: number }[];
+}
+
+/**
+ * Best-effort tap-to-refocus: true "focus exactly where I tapped" isn't
+ * reliably available cross-browser (researched, not guessed -- Android
+ * Chrome only; `pointsOfInterest` support is spottier even there than plain
+ * `focusMode`). Feature-detected against the live track's own capabilities,
+ * so a platform that doesn't expose focus control just does nothing on tap
+ * rather than pretending it worked.
+ */
+function initTapToFocus(track: MediaStreamTrack) {
+  const getCaps = (track as unknown as { getCapabilities?: () => FocusCapabilities }).getCapabilities;
+  const caps = getCaps?.call(track) ?? {};
+  const canFocus = Array.isArray(caps.focusMode) && caps.focusMode.some((m) => m === "single-shot" || m === "manual");
+  if (!canFocus) {
+    console.warn("[camera] no focus control exposed by this browser/device -- tap-to-focus is a no-op here");
+    return;
+  }
+  const supportsPoint = "pointsOfInterest" in (caps as Record<string, unknown>);
+
+  video.style.cursor = "crosshair";
+  video.title = "Tap to refocus the camera";
+  video.addEventListener("click", (e) => {
+    const rect = video.getBoundingClientRect();
+    const x = clamp01((e.clientX - rect.left) / rect.width);
+    const y = clamp01((e.clientY - rect.top) / rect.height);
+    const constraint: FocusConstraintSet = { focusMode: "single-shot" };
+    if (supportsPoint) constraint.pointsOfInterest = [{ x, y }];
+    (track.applyConstraints as (c: { advanced: FocusConstraintSet[] }) => Promise<void>)({ advanced: [constraint] })
+      .then(() => console.info("[camera] refocus requested", constraint))
+      .catch((err) => console.warn("[camera] refocus failed", err));
+  });
+}
+
+function clamp01(v: number): number {
+  return Math.min(1, Math.max(0, v));
 }
 
 function resizeCanvas() {
@@ -342,7 +401,17 @@ async function detectFacesIfReady() {
   faceDetectBusy = true;
   try {
     if (video.readyState >= 2) {
-      latestFaces = detectFaces(video, performance.now());
+      const nowForDetect = performance.now();
+      const faces = detectFaces(video, nowForDetect);
+      // Pose (body) detection runs unconditionally for now, as a fallback for
+      // whenever a person is too far away for FaceLandmarker to resolve --
+      // two MediaPipe models per frame is real added cost on a phone, so
+      // watch the debug panel's fps after the first real test; only running
+      // this when the face count looks low relative to recent frames is the
+      // obvious next tuning step if it turns out too heavy, not something to
+      // guess at blind.
+      const bodies = posesReady ? detectBodies(video, nowForDetect) : [];
+      latestFaces = mergeFacesAndBodies(faces, bodies);
       // §4.6 `vision`: hand the backend the boxes this page already computed, so
       // it can produce a camera-backed bearing (there is one webcam and this page
       // owns it). Throttled to 10 Hz — the backend ages frames out after 0.6 s,
@@ -446,6 +515,15 @@ function frame() {
   } catch (err) {
     console.warn("face landmarker failed to load; bubbles will render without face anchoring", err);
   }
+  // Not awaited before the render loop starts: the pose model is a second,
+  // larger download/load, and there's no reason to delay everything else
+  // (which works fine without it, same as always) on a fallback path that
+  // will usually be irrelevant for a while.
+  initPoseLandmarker()
+    .then(() => {
+      posesReady = true;
+    })
+    .catch((err) => console.warn("pose landmarker failed to load; no body-detection fallback this session", err));
   requestAnimationFrame(frame);
 })();
 
@@ -457,6 +535,7 @@ Object.defineProperty(window, "__hud", {
     mic: () => mic.status,
     orientation: () => orientation.status,
     faces: () => latestFaces,
+    posesReady: () => posesReady,
     calib: () => calib,
     fps: () => fps,
   },

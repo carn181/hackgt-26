@@ -1,15 +1,18 @@
-import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { FaceLandmarker, FilesetResolver, PoseLandmarker } from "@mediapipe/tasks-vision";
 
 // Assets are loaded from our own origin first: `dev/sync-assets.mjs` copies the
 // version-matched WASM out of node_modules into public/wasm on `npm install`, and
-// public/models/face_landmarker.task is committed. That removes the runtime CDN
-// dependency, which matters in a hall where 2.4 GHz is jammed (README §12). The
-// CDN stays as a fallback so a checkout without node_modules still works.
+// public/models/*.task is committed. That removes the runtime CDN dependency,
+// which matters in a hall where 2.4 GHz is jammed (README §12). The CDN stays
+// as a fallback so a checkout without node_modules still works.
 const WASM_LOCAL = "/wasm";
 const WASM_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
 const MODEL_LOCAL = "/models/face_landmarker.task";
 const MODEL_CDN =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+const POSE_MODEL_LOCAL = "/models/pose_landmarker_lite.task";
+const POSE_MODEL_CDN =
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
 const MOUTH_OPEN_THRESHOLD = 0.3;
 
@@ -50,6 +53,11 @@ export interface DetectedFace {
    * MediaPipe gives no persistent face id) -- lets a caller "lock onto" a
    * speaker across frames instead of re-deciding from scratch each time. */
   trackId: number;
+  /** False for a body-only fallback entry (see detectBodies/mergeFacesAndBodies
+   * below): a real person, with a real anchor position, but no mouth signal
+   * at all -- past ~1-1.5m FaceLandmarker can't resolve a face, but pose
+   * detection still can. Always true from detectFaces() itself. */
+  hasFace: boolean;
 }
 
 interface MouthHistoryEntry {
@@ -184,8 +192,143 @@ export function detectFaces(video: HTMLVideoElement, timestampMs: number): Detec
       centerXNorm: (minX + maxX) / 2,
       mouthOpen: mouthOpenScore > MOUTH_OPEN_THRESHOLD,
       mouthOpenScore,
+      hasFace: true,
     });
   }
 
   return withMouthActivity(faces, timestampMs);
+}
+
+// ---------------------------------------------------------------------------
+// Body (pose) detection: a fallback for when a person is too far away for
+// FaceLandmarker to resolve a face at all (~1-1.5m+), which live testing
+// showed is a real, common case -- the speech bubble had nothing to anchor
+// to and fell back to an unanchored center placement even though a person
+// was clearly visible and talking. Pose detection can still find *them*,
+// just without a mouth signal: this gives a real anchor position, not
+// speaker discrimination (see mergeFacesAndBodies below for how the two
+// combine).
+const POSE_MATCH_DIST_NORM = 0.2; // looser than face tracking -- pose boxes move more between frames
+const FACE_COVERS_BODY_DIST_NORM = 0.12; // a face this close to a body's head estimate means "already covered"
+
+// BlazePose's fixed 33-point topology (stable across MediaPipe versions):
+// nose, then eyes/ears, then shoulders at 11/12. Only these three are used --
+// enough to estimate roughly where a face box would be, not full skeleton.
+const POSE_NOSE = 0;
+const POSE_LEFT_SHOULDER = 11;
+const POSE_RIGHT_SHOULDER = 12;
+
+interface BodyHistoryEntry {
+  id: number;
+  centerXNorm: number;
+  centerYNorm: number;
+}
+
+let bodyHistories: BodyHistoryEntry[] = [];
+let nextBodyTrackId = -1; // negative range, so body trackIds can never collide with face trackIds (nextTrackId is positive)
+
+let poseLandmarker: PoseLandmarker | null = null;
+let poseInitPromise: Promise<PoseLandmarker> | null = null;
+
+export function initPoseLandmarker(): Promise<PoseLandmarker> {
+  if (poseInitPromise) return poseInitPromise;
+  poseInitPromise = (async () => {
+    for (const [wasmBase, modelUrl] of [
+      [WASM_LOCAL, POSE_MODEL_LOCAL],
+      [WASM_CDN, POSE_MODEL_CDN],
+    ] as const) {
+      try {
+        const fileset = await FilesetResolver.forVisionTasks(wasmBase);
+        poseLandmarker = await PoseLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: modelUrl, delegate: "GPU" },
+          runningMode: "VIDEO",
+          numPoses: 4,
+        });
+        if (wasmBase !== WASM_LOCAL) {
+          console.warn("[faces] loaded pose model from the CDN; run `npm install` for offline assets");
+        }
+        return poseLandmarker;
+      } catch (err) {
+        if (wasmBase === WASM_LOCAL) {
+          console.warn("[faces] local pose assets unusable, falling back to the CDN", err);
+        } else {
+          throw err;
+        }
+      }
+    }
+    throw new Error("unreachable");
+  })();
+  return poseInitPromise;
+}
+
+/** Body-only `DetectedFace`-shaped entries (hasFace: false, no mouth signal
+ * at all) -- same shape as detectFaces() on purpose, so nothing downstream
+ * (bearing matching, the vision message, rendering) needs a second code
+ * path. Position is a head/neck estimate from the nose + shoulder
+ * landmarks, not the full body box -- a speech bubble should land near
+ * where a face *would* be, not at someone's waist. */
+export function detectBodies(video: HTMLVideoElement, timestampMs: number): DetectedFace[] {
+  if (!poseLandmarker) return [];
+  const result = poseLandmarker.detectForVideo(video, timestampMs);
+  const claimed = new Set<number>();
+  const nextHistories: BodyHistoryEntry[] = [];
+
+  const bodies = result.landmarks.map((lm) => {
+    const nose = lm[POSE_NOSE];
+    const ls = lm[POSE_LEFT_SHOULDER];
+    const rs = lm[POSE_RIGHT_SHOULDER];
+    const shoulderY = (ls.y + rs.y) / 2;
+    const shoulderW = Math.abs(rs.x - ls.x);
+    const shoulderMidX = (ls.x + rs.x) / 2;
+    // Extend above the nose by a fraction of the nose-to-shoulder gap to
+    // approximate a forehead, and use a fraction of shoulder width as an
+    // approximate face width -- rough on purpose, this only needs to be
+    // "in the right place," not pixel-accurate the way a real face box is.
+    const noseToShoulder = Math.max(0.02, shoulderY - nose.y);
+    const top = Math.max(0, nose.y - noseToShoulder * 0.6);
+    const bottom = shoulderY;
+    const halfW = Math.max(0.02, shoulderW * 0.22);
+    const centerX = (nose.x + shoulderMidX) / 2;
+
+    let bestIdx = -1;
+    let bestDist = POSE_MATCH_DIST_NORM;
+    for (let i = 0; i < bodyHistories.length; i++) {
+      if (claimed.has(i)) continue;
+      const h = bodyHistories[i];
+      const d = Math.hypot(centerX - h.centerXNorm, top - h.centerYNorm);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    const id = bestIdx >= 0 ? bodyHistories[bestIdx].id : nextBodyTrackId--;
+    if (bestIdx >= 0) claimed.add(bestIdx);
+    nextHistories.push({ id, centerXNorm: centerX, centerYNorm: top });
+
+    const body: DetectedFace = {
+      bboxNorm: { x: centerX - halfW, y: top, w: halfW * 2, h: bottom - top },
+      centerXNorm: centerX,
+      mouthOpen: false,
+      mouthOpenScore: 0,
+      mouthActive: false,
+      mouthActivity: 0,
+      trackId: id,
+      hasFace: false,
+    };
+    return body;
+  });
+
+  bodyHistories = nextHistories;
+  return bodies;
+}
+
+/** Combine a frame's faces with its bodies: a body is only included when no
+ * detected face already covers roughly the same head position -- a face
+ * already gives a strictly better anchor (plus real mouth data), so this
+ * only ever *adds* people who'd otherwise have no anchor at all. */
+export function mergeFacesAndBodies(faces: DetectedFace[], bodies: DetectedFace[]): DetectedFace[] {
+  const extra = bodies.filter(
+    (b) => !faces.some((f) => Math.hypot(f.centerXNorm - b.centerXNorm, f.bboxNorm.y - b.bboxNorm.y) < FACE_COVERS_BODY_DIST_NORM)
+  );
+  return [...faces, ...extra];
 }
