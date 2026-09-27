@@ -386,6 +386,18 @@ function computeFaceAnchors(
       chosen = faceBearings.find((fb) => fb.face.trackId === lockedTrackId) ?? null;
     }
 
+    // Mouth-activity (and the lock built on it) exists to answer "which of
+    // these people is talking" -- a question that only has content when
+    // there's more than one candidate. A body-only detection (too far for a
+    // face) never has mouth data and so can never win the lock above, which
+    // is correct when there's a crowd but wrong when there's exactly one
+    // person: at that point there's nothing to discriminate between, and an
+    // active, otherwise-unanchored speech event almost certainly belongs to
+    // them, mouth signal or not.
+    if (!chosen && faceBearings.length === 1) {
+      chosen = faceBearings[0];
+    }
+
     result.set(speechId, chosen);
   }
   return result;
